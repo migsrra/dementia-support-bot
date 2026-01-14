@@ -2,6 +2,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import os
 from typing import List, Dict, Any
+
+from fastapi.middleware.cors import CORSMiddleware
 import time
 import uuid
 from collections import defaultdict, deque
