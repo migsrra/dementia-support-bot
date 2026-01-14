@@ -6,9 +6,16 @@ import {
   Scripts,
   ScrollRestoration,
 } from "react-router";
+import { MantineProvider, createTheme } from "@mantine/core";
 
 import type { Route } from "./+types/root";
+import "@mantine/core/styles.css";
 import "./app.css";
+
+const theme = createTheme({
+  fontFamily: "Manrope, ui-sans-serif, system-ui, sans-serif",
+  headings: { fontFamily: "Manrope, ui-sans-serif, system-ui, sans-serif" },
+});
 
 export const links: Route.LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -19,7 +26,7 @@ export const links: Route.LinksFunction = () => [
   },
   {
     rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
+    href: "https://fonts.googleapis.com/css2?family=Manrope:wght@300..800&display=swap",
   },
 ];
 
@@ -33,7 +40,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Links />
       </head>
       <body>
-        {children}
+        <MantineProvider theme={theme}>{children}</MantineProvider>
         <ScrollRestoration />
         <Scripts />
       </body>
