@@ -48,10 +48,10 @@ const seedMessages: ChatMessage[] = [
 let nextMessageId = 2;
 let nextConversationId = 2;
 
-async function getAssistantReply(prompt: string) {
+async function getAssistantReply(prompt: string, conversationId: string) {
   const trimmed = prompt.trim();
   if (!trimmed) {
-    return "Tell me a little more, and I will help.";
+    return { text: "Tell me a little more, and I will help." };
   }
 
   // 10 Second timeout
@@ -59,28 +59,38 @@ async function getAssistantReply(prompt: string) {
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   try {
-    const response = await fetch("http://localhost:8000/query", {
+    const response = await fetch("http://localhost:8000/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ concern: trimmed }),
+      body: JSON.stringify({
+        user_id: "demo_user",
+        conversation_id: conversationId,
+        message: trimmed,
+      }),
       signal: controller.signal,
     });
 
     if (!response.ok) {
-      throw new Error(`Backend error (${response.status})`);
+      const errorBody = await response.json().catch(() => null);
+      return {
+        text:
+          errorBody?.error ||
+          errorBody?.detail ||
+          `Backend error (${response.status})`,
+      };
     }
 
     const data = await response.json();
     if (!data?.answer) {
-      throw new Error("Empty response from server");
+      return { text: "Sorry, I couldn't get an answer right now." };
     }
 
-    return data.answer;
+    return { text: data.answer, conversationId: data.conversation_id || conversationId };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      return "The request timed out. Please try again.";
+      return { text: "The request timed out. Please try again." };
     }
-    return "Sorry, I couldn't reach the assistant right now.";
+    return { text: "Sorry, I couldn't reach the assistant right now." };
   } finally {
     clearTimeout(timeoutId);
   }
@@ -156,11 +166,11 @@ export default function Home() {
     );
     setDraft("");
 
-    const replyText = await getAssistantReply(trimmed);
+    const reply = await getAssistantReply(trimmed, String(activeConversation.id));
     const assistantMessage: ChatMessage = {
       id: nextMessageId++,
       role: "assistant",
-      text: replyText,
+      text: reply.text,
     };
     setConversations((current) =>
       current.map((conversation) =>
