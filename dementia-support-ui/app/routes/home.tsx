@@ -53,10 +53,39 @@ async function getAssistantReply(prompt: string) {
   if (!trimmed) {
     return "Tell me a little more, and I will help.";
   }
-  return new Promise<string>((resolve) => {
-    setTimeout(() => resolve(`You said: ${trimmed}`), 400);
-  });
+
+  // 10 Second timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch("http://localhost:8000/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ concern: trimmed }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Backend error (${response.status})`);
+    }
+
+    const data = await response.json();
+    if (!data?.answer) {
+      throw new Error("Empty response from server");
+    }
+
+    return data.answer;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return "The request timed out. Please try again.";
+    }
+    return "Sorry, I couldn't reach the assistant right now.";
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
+
 
 export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([
