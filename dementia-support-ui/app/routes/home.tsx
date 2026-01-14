@@ -41,7 +41,7 @@ const seedMessages: ChatMessage[] = [
     id: 1,
     role: "assistant",
     text:
-      "Hi there. I can help with gentle reminders, daily routines, or questions about memory care.",
+      "How can I help you today?",
   },
 ];
 
@@ -151,19 +151,20 @@ export default function Home() {
       role: "user",
       text: trimmed,
     };
-    setConversations((current) =>
-      current.map((conversation) =>
-        conversation.id === activeConversation.id
-          ? {
-              ...conversation,
-              messages: [...conversation.messages, userMessage],
-              title: conversation.title.startsWith("New conversation")
-                ? trimmed
-                : conversation.title,
-            }
-          : conversation,
-      ),
-    );
+setConversations((current) =>
+  current.map((conversation) => {
+    if (conversation.id !== activeConversation.id) return conversation;
+
+    const isFirstUserMessage =
+      conversation.messages.filter((m) => m.role === "user").length === 0;
+
+    return {
+      ...conversation,
+      messages: [...conversation.messages, userMessage],
+      title: isFirstUserMessage ? trimmed : conversation.title,
+    };
+  }),
+);
     setDraft("");
 
     const reply = await getAssistantReply(trimmed, String(activeConversation.id));
