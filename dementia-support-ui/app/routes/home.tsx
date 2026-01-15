@@ -36,6 +36,7 @@ type Conversation = {
   messages: ChatMessage[];
 };
 
+// Initial data
 const seedMessages: ChatMessage[] = [
   {
     id: 1,
@@ -48,17 +49,15 @@ const seedMessages: ChatMessage[] = [
 let nextMessageId = 2;
 let nextConversationId = 2;
 
-async function getAssistantReply(prompt: string, conversationId: string) {
+// Backend call function
+async function getAssistantReply(prompt: string, conversationId: string, signal: AbortSignal) {
+  
+  // removing whitespace and returning early if empty
   const trimmed = prompt.trim();
-  if (!trimmed) {
-    return { text: "Tell me a little more, and I will help." };
-  }
-
-  // 10 Second timeout
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  if (!trimmed) {  return { text: "Tell me a little more, and I will help." }; }
 
   try {
+    // sent request to backend, blocks
     const response = await fetch("http://localhost:8000/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -67,9 +66,10 @@ async function getAssistantReply(prompt: string, conversationId: string) {
         conversation_id: conversationId,
         message: trimmed,
       }),
-      signal: controller.signal,
+      signal,   // signal sent by UI
     });
 
+    // error handling
     if (!response.ok) {
       const errorBody = await response.json().catch(() => null);
       return {
@@ -80,24 +80,28 @@ async function getAssistantReply(prompt: string, conversationId: string) {
       };
     }
 
+    // parse success response
     const data = await response.json();
-    if (!data?.answer) {
-      return { text: "Sorry, I couldn't get an answer right now." };
-    }
 
+    // error check
+    if (!data?.answer) { return { text: "Sorry, I couldn't get an answer right now." }; }
+
+    // return chatbot response
     return { text: data.answer, conversationId: data.conversation_id || conversationId };
-  } catch (error) {
+  } catch (error) {   // catches exeptions like failures and aborts
+    // timeout exception
     if (error instanceof DOMException && error.name === "AbortError") {
-      return { text: "The request timed out. Please try again." };
+      throw error;    // UI will handle cancellation
     }
+    console.error("getAssistantReply error:", error);
+    // generic exception handle
     return { text: "Sorry, I couldn't reach the assistant right now." };
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  } 
 }
 
-
+// frontend, updates UI automatically when states change
 export default function Home() {
+  // states
   const [conversations, setConversations] = useState<Conversation[]>([
     {
       id: 1,
@@ -109,11 +113,13 @@ export default function Home() {
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
+  const [controller, setController] = useState<AbortController | null>(null);
 
   const activeConversation =
     conversations.find((conversation) => conversation.id === activeConversationId) ??
     conversations[0];
 
+  // run after render if something changed
   useEffect(() => {
     const viewport = scrollViewportRef.current;
     if (!viewport || !activeConversation) {
@@ -122,6 +128,7 @@ export default function Home() {
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
   }, [activeConversationId, activeConversation?.messages.length]);
 
+  // new conversation handler
   function handleNewConversation() {
     const newConversation: Conversation = {
       id: nextConversationId++,
@@ -134,58 +141,95 @@ export default function Home() {
         },
       ],
     };
+    // update states
     setConversations((current) => [newConversation, ...current]);
     setActiveConversationId(newConversation.id);
     setDraft("");
   }
 
+  // send message handler
   async function handleSend() {
     const trimmed = draft.trim();
     if (!trimmed || isSending || !activeConversation) {
       return;
     }
 
+    // set message states
+    const newController = new AbortController();
+    setController(newController);
     setIsSending(true);
     const userMessage: ChatMessage = {
       id: nextMessageId++,
       role: "user",
       text: trimmed,
     };
-setConversations((current) =>
-  current.map((conversation) => {
-    if (conversation.id !== activeConversation.id) return conversation;
 
-    const isFirstUserMessage =
-      conversation.messages.filter((m) => m.role === "user").length === 0;
+    setConversations((current) =>
+      current.map((conversation) => {
+        if (conversation.id !== activeConversation.id) return conversation;
 
-    return {
-      ...conversation,
-      messages: [...conversation.messages, userMessage],
-      title: isFirstUserMessage ? trimmed : conversation.title,
-    };
-  }),
-);
+        const isFirstUserMessage =
+          conversation.messages.filter((m) => m.role === "user").length === 0;
+
+        return {
+          ...conversation,
+          messages: [...conversation.messages, userMessage],
+          title: isFirstUserMessage ? trimmed : conversation.title,
+        };
+      }),
+    );
+
     setDraft("");
 
-    const reply = await getAssistantReply(trimmed, String(activeConversation.id));
-    const assistantMessage: ChatMessage = {
-      id: nextMessageId++,
-      role: "assistant",
-      text: reply.text,
-    };
-    setConversations((current) =>
-      current.map((conversation) =>
-        conversation.id === activeConversation.id
-          ? {
-              ...conversation,
-              messages: [...conversation.messages, assistantMessage],
-            }
-          : conversation,
-      ),
-    );
-    setIsSending(false);
+    // send message to backend, return with chatbot response
+    try {
+      const reply = await getAssistantReply(trimmed, String(activeConversation.id), newController.signal);
+      const assistantMessage: ChatMessage = {
+        id: nextMessageId++,
+        role: "assistant",
+        text: reply.text,
+      };
+
+      setConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === activeConversation.id
+            ? {
+                ...conversation,
+                messages: [...conversation.messages, assistantMessage],
+              }
+            : conversation,
+        ),
+      );
+      // setIsSending(false);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        const cancelledMessage: ChatMessage = {
+          id: nextMessageId++,
+          role: "assistant",
+          text: "Response cancelled.",
+        };
+
+        setConversations((current) =>
+          current.map((conversation) =>
+            conversation.id === activeConversation.id
+              ? { ...conversation, messages: [...conversation.messages, cancelledMessage] }
+              : conversation
+          )
+        );
+      }
+    } finally {
+      setIsSending(false);
+      setController(null);
+    }
   }
 
+  function handleCancel() {
+    if (controller) {
+      controller.abort();
+    }
+  }
+
+  // UI layout
   return (
     <Box className="page">
       <Container size="xl" py={48}>
@@ -223,54 +267,75 @@ setConversations((current) =>
               </Stack>
 
             </Group>
+            <Paper
+              className="chat-card"
+              p="lg"
+              radius="lg"
+              shadow="md"
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                height: "70vh",
+              }}
+            >
+              <ScrollArea
+                type="scroll"
+                offsetScrollbars
+                viewportRef={scrollViewportRef}
+                style={{ flex: 1, minHeight: 0 }}
+              >
+                <Stack gap="sm" className="messages">
+                  {activeConversation?.messages.map((message) => (
+                    <Paper
+                      key={message.id}
+                      className="message"
+                      data-role={message.role}
+                      p="md"
+                      radius="lg"
+                    >
+                      <Text size="sm" fw={600} className="message-label">
+                        {message.role === "assistant" ? "Assistant" : "You"}
+                      </Text>
+                      <Text>{message.text}</Text>
+                    </Paper>
+                  ))}
+                </Stack>
+              </ScrollArea>
 
-            <Paper className="chat-card" p="lg" radius="lg" shadow="md">
-              <Stack gap="md">
-                <ScrollArea
-                  h={360}
-                  type="scroll"
-                  offsetScrollbars
-                  viewportRef={scrollViewportRef}
-                >
-                  <Stack gap="sm" className="messages">
-                    {activeConversation?.messages.map((message) => (
-                      <Paper
-                        key={message.id}
-                        className="message"
-                        data-role={message.role}
-                        p="md"
-                        radius="lg"
-                      >
-                        <Text size="sm" fw={600} className="message-label">
-                          {message.role === "assistant" ? "Assistant" : "You"}
-                        </Text>
-                        <Text>{message.text}</Text>
-                      </Paper>
-                    ))}
-                  </Stack>
-                </ScrollArea>
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    handleSend();
-                  }}
-                >
-                  <Group align="flex-end" gap="sm" wrap="nowrap">
-                    <TextInput
-                      className="message-input"
-                      placeholder="Ask about routines, reminders, or support..."
-                      styles={{ root: { flex: 1 } }}
-                      size="md"
-                      value={draft}
-                      onChange={(event) => setDraft(event.currentTarget.value)}
-                      disabled={isSending || !activeConversation}
-                    />
-                    <Button size="md" type="submit" loading={isSending}>
+              {/* form stays pinned to bottom */}
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  handleSend();
+                }}
+              >
+                <Group align="flex-end" gap="sm" wrap="nowrap">
+                  <TextInput
+                    className="message-input"
+                    placeholder="Ask about routines, reminders, or support..."
+                    styles={{ root: { flex: 1 } }}
+                    size="md"
+                    value={draft}
+                    onChange={(event) => setDraft(event.currentTarget.value)}
+                    disabled={isSending || !activeConversation}
+                  />
+                  {!isSending ? (
+                    <Button size="md" type="submit">
                       Send
                     </Button>
-                  </Group>
-                </form>
-              </Stack>
+                  ) : (
+                    <Button
+                      size="md"
+                      color="red"
+                      variant="light"
+                      type="button"
+                      onClick={handleCancel}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </Group>
+              </form>
             </Paper>
           </Stack>
         </div>
