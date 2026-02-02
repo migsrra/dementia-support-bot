@@ -193,6 +193,69 @@ def build_readable_citation_pack(sources: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# -------------------------
+# MINIMAL FIX: strip formatter artifacts before re-feeding history
+# -------------------------
+
+def strip_human_formatting(text: str) -> str:
+    """
+    Remove formatting artifacts that should NOT be fed back into the model context.
+    Prevents the model from echoing/duplicating 'Source:' and 'Encouragement:' blocks.
+    """
+    if not text:
+        return ""
+
+    t = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove per-tip citation lines
+    t = re.sub(r"(?im)^\s*Source:\s*.*$", "", t)
+
+    # Remove the "Encouragement:" label if present (keep the encouragement sentence)
+    t = re.sub(r"(?im)^\s*Encouragement:\s*", "", t)
+
+    # Collapse extra blank lines created by deletions
+    t = re.sub(r"\n{3,}", "\n\n", t)
+
+    return t.strip()
+
+
+# -------------------------
+# MINIMAL FIX #2: remove duplicate non-empty lines even if separated by blank lines
+# -------------------------
+
+def remove_duplicate_nonempty_lines(text: str) -> str:
+    """
+    Remove repeated non-empty lines even if separated by blank lines.
+    Keeps the first occurrence and preserves at most one blank line.
+    """
+    if not text:
+        return ""
+
+    lines = text.split("\n")
+    out: List[str] = []
+    seen_nonempty = set()
+    last_was_blank = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped == "":
+            if not last_was_blank:
+                out.append(line)
+            last_was_blank = True
+            continue
+
+        last_was_blank = False
+
+        if stripped in seen_nonempty:
+            continue
+
+        seen_nonempty.add(stripped)
+        out.append(line)
+
+    return "\n".join(out).strip()
+
+
 def normalize_human_output(text: str) -> str:
     """
     Final cleanup pass to ensure:
@@ -229,6 +292,10 @@ def normalize_human_output(text: str) -> str:
 
     # Clean up excessive blank lines
     text = re.sub(r"\n{4,}", "\n\n\n", text)
+
+    # MINIMAL FIX #2 applied here
+    text = remove_duplicate_nonempty_lines(text)
+
     return text.strip()
 
 
@@ -240,6 +307,9 @@ def format_answer_for_humans(draft_answer: str, sources: List[Dict[str, Any]]) -
     draft_answer = (draft_answer or "").strip()
     if not draft_answer:
         return ""
+
+    # MINIMAL FIX: if draft already contains Source/Encouragement, strip it to avoid double insert.
+    draft_answer = strip_human_formatting(draft_answer)
 
     citation_pack = build_readable_citation_pack(sources)
 
@@ -291,6 +361,7 @@ def build_context_text(
 ) -> str:
     """
     Transcript + remembered notes + system policy.
+    MINIMAL FIX: strip 'Source:' and 'Encouragement:' from assistant turns before re-feeding.
     """
     remembered = get_remembered_notes(history)
     remembered_block = "\n".join([f"- {x}" for x in remembered]) if remembered else "(none)"
@@ -303,6 +374,11 @@ def build_context_text(
         content = (turn.get("content") or "").strip()
         if not content:
             continue
+
+        # MINIMAL FIX: do NOT feed Source/Encouragement blocks back into model context
+        if role == "assistant":
+            content = strip_human_formatting(content)
+
         prefix = "User" if role == "user" else "Assistant"
         lines.append(f"{prefix}: {content}")
 
