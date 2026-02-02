@@ -105,7 +105,7 @@ export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([
     {
       id: 1,
-      title: "Morning routine",
+      title: "New Conversation",
       messages: seedMessages,
     },
   ]);
