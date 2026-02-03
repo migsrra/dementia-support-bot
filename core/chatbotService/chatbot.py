@@ -2,6 +2,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import os
 from typing import List, Dict, Any
+
+from fastapi.middleware.cors import CORSMiddleware
 import time
 import uuid
 from collections import defaultdict, deque
@@ -12,6 +14,8 @@ import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
+from fastapi.middleware.cors import CORSMiddleware
+
 #
 # Load config from .env in the same folder
 # Keeps keys and IDs outside of the code
@@ -21,6 +25,17 @@ ENV_PATH = os.path.join(BASE_DIR, ".env")
 load_dotenv(dotenv_path=ENV_PATH)
 
 app = FastAPI(title="Bedrock Knowledge Base RAG API")
+
+# Command to host server
+# python -m uvicorn core.chatbotService.chatbot:app --reload --port 8000
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 #
 # Simple in-memory conversation store (dev/demo)
