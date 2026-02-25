@@ -77,33 +77,45 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "1")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "3")
 
         # Guardrail check
         guardrail_response = bedrock_runtime.apply_guardrail(
             guardrailIdentifier=GUARDRAIL_ID,
             guardrailVersion=GUARDRAIL_VERSION,
             source="INPUT",
-            content=[{"text": body_str}]
+            content=[
+                {"text": {
+                    "text": body_str
+                    }
+                }
+            ]
         )
 
         risk_score = 0
         non_risk_categories = []
 
-        for result in guardrail_response.get("assessments", []):
-            category = result.get("category")
+        logger.info(json.dumps(guardrail_response, indent=2))
 
-            # compute risk of the query
-            if category == "Ambiguous Crisis_Self-Harm Language":       # tier 1 risk
-                risk_score += 1
-            elif category == "Emotional Distress":                      # tier 2 risk
-                risk_score += 3
-            elif category == "Explicit Self-Harm Intent":               # tier 3 risk
-                risk_score += 5
-            elif category == "Self-Harm Instructions":                  # tier 3 risk
-                risk_score += 6
-            else:
-                non_risk_categories.append(category)
+        assessments = guardrail_response.get("assessments", [])
+
+        for assessment in assessments:
+            topic_policy = assessment.get("topicPolicy", {})
+            topics = topic_policy.get("topics", [])
+
+            for topic in topics:        # denied topics
+                name = topic.get("name")
+                # compute risk of the query
+                if name == "Ambiguous Crisis_Self-Harm Language":       # tier 1 risk
+                    risk_score += 1
+                elif name == "Emotional Distress":                      # tier 2 risk
+                    risk_score += 3
+                elif name == "Explicit Self-Harm Intent":               # tier 3 risk
+                    risk_score += 5
+                elif name == "Self-Harm Instructions":                  # tier 3 risk
+                    risk_score += 6
+                else:
+                    non_risk_categories.append(name)
             
         # Response Strategy based on risk and blocks
         if non_risk_categories:
@@ -135,6 +147,7 @@ def lambda_handler(event, context):
 
         if risk_score >= 6:
             body_str = f"""
+            GUARDRAIL ALERT:
             The user appears to be at high risk of self-harm or expressing imminent intent.
 
             You MUST:
@@ -150,6 +163,7 @@ def lambda_handler(event, context):
             """
         elif 3 <= risk_score < 6:
             body_str = f"""
+            GUARDRAIL ALERT:
             The user may be experiencing emotional distress or self-harm ideation.
             Respond with empathy. Encourage reaching out to trusted people. Offer dementia resources 
             like calling the Alzheimer Society of Canada at 1-800-616-8816 or emailing at info@alzheimer.ca.
@@ -159,6 +173,7 @@ def lambda_handler(event, context):
             """
         elif risk_score < 3:
             body_str = f"""
+            GUARDRAIL ALERT:
             The user may be experiencing emotional distress. Respond with empathy. Offer dementia resources
             like calling the Alzheimer Society of Canada at 1-800-616-8816 or emailing at info@alzheimer.ca.
 
