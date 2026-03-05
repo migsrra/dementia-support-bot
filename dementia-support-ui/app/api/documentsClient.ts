@@ -76,9 +76,15 @@ export async function listDocuments(): Promise<DocumentItem[]> {
     })
     .filter((d) => d.key);
 
-    await wait(SIMULATED_LATENCY_MS);
-    maybeThrowSimulatedError("list");
-    return [...mockDocuments];
+
+}
+
+export async function deleteDocument(key: string): Promise<void> {
+  assertConfigured("VITE_DOCUMENTS_API_BASE_URL", DOCS_API_BASE_URL);
+
+  // IMPORTANT: encode key so spaces/#/? don't break the URL
+  const url = joinUrl(DOCS_API_BASE_URL, `${DOCS_API_DELETE_PATH}/${encodeURIComponent(key)}`);
+  await fetchOrThrow(url, { method: "DELETE" });
 }
 
 
@@ -111,11 +117,6 @@ export async function uploadDocument(file: File): Promise<void> {
     ];
 }
 
-export async function deleteDocument(key: string): Promise<void> {
-    await wait(SIMULATED_LATENCY_MS - 150);
-    maybeThrowSimulatedError("delete");
-    mockDocuments = mockDocuments.filter((document) => document.key !== key);
-}
 
 // Future Lambda wiring: replace mock implementations above with real fetch calls
 // using DOCS_API_BASE_URL + *_PATH placeholders. Keep this module as the single
