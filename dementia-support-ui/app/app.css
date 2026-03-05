@@ -73,6 +73,21 @@ body {
   background: #fdfefb;
 }
 
+.upload-dropzone {
+  border: 1.5px dashed rgba(20, 184, 166, 0.45);
+  background: rgba(255, 255, 255, 0.72);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.upload-dropzone:hover {
+  border-color: rgba(15, 118, 110, 0.6);
+  background: rgba(240, 253, 250, 0.65);
+}
+
+.hidden-file-input {
+  display: none;
+}
+
 @media (max-width: 900px) {
   .chat-layout {
     grid-template-columns: 1fr;

@@ -1,6 +1,5 @@
 import type { Route } from "./+types/home";
 import {
-  Badge,
   Box,
   Button,
   Container,
@@ -13,6 +12,7 @@ import {
   Title,
 } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -265,7 +265,9 @@ export default function Home() {
                 </Text>
                 <Title order={1}>Calm, guided chat for daily care</Title>
               </Stack>
-
+              <Button component={Link} to="/docIngestion" variant="light">
+                Manage Documents
+              </Button>
             </Group>
             <Paper
               className="chat-card"
