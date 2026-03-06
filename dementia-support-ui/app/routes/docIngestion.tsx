@@ -296,12 +296,26 @@ export default function DocIngestion() {
               {isUploading ? <Progress value={uploadProgress} animated size="lg" radius="xl" /> : null}
 
               {uploadError ? (
-                <Alert color="red" variant="light" title="Upload error">
+                <Alert
+                  color="red"
+                  variant="light"
+                  title="Upload error"
+                  withCloseButton
+                  closeButtonLabel="Dismiss upload error"
+                  onClose={() => setUploadError(null)}
+                >
                   {uploadError}
                 </Alert>
               ) : null}
               {uploadSuccess ? (
-                <Alert color="teal" variant="light" title="Upload complete">
+                <Alert
+                  color="teal"
+                  variant="light"
+                  title="Upload complete"
+                  withCloseButton
+                  closeButtonLabel="Dismiss upload success"
+                  onClose={() => setUploadSuccess(null)}
+                >
                   {uploadSuccess}
                 </Alert>
               ) : null}
@@ -333,18 +347,39 @@ export default function DocIngestion() {
               />
 
               {loadError ? (
-                <Alert color="red" variant="light" title="Could not load documents">
+                <Alert
+                  color="red"
+                  variant="light"
+                  title="Could not load documents"
+                  withCloseButton
+                  closeButtonLabel="Dismiss load error"
+                  onClose={() => setLoadError(null)}
+                >
                   {loadError}
                 </Alert>
               ) : null}
 
               {deleteError ? (
-                <Alert color="red" variant="light" title="Delete error">
+                <Alert
+                  color="red"
+                  variant="light"
+                  title="Delete error"
+                  withCloseButton
+                  closeButtonLabel="Dismiss delete error"
+                  onClose={() => setDeleteError(null)}
+                >
                   {deleteError}
                 </Alert>
               ) : null}
               {deleteSuccess ? (
-                <Alert color="teal" variant="light" title="Delete complete">
+                <Alert
+                  color="teal"
+                  variant="light"
+                  title="Delete complete"
+                  withCloseButton
+                  closeButtonLabel="Dismiss delete success"
+                  onClose={() => setDeleteSuccess(null)}
+                >
                   {deleteSuccess}
                 </Alert>
               ) : null}
