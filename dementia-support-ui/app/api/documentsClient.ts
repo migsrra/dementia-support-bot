@@ -10,25 +10,8 @@ const DOCS_API_DELETE_PATH = import.meta.env.VITE_DOCUMENTS_DELETE_PATH ?? "/doc
 
 const UPLOAD_API_BASE_URL = import.meta.env.VITE_UPLOAD_API_BASE_URL ?? DOCS_API_BASE_URL;
 const DOCS_API_UPLOAD_PATH = import.meta.env.VITE_DOCUMENTS_UPLOAD_PATH ?? "/documents/upload";
+const KB_SYNC_API_URL = import.meta.env.VITE_KB_SYNC_API_URL ?? "";
 
-
-// let mockDocuments: DocumentItem[] = [
-//     {
-//         key: "caregiver-handbook.pdf",
-//         sizeBytes: 2_781_331,
-//         lastModified: "2026-03-03T14:11:02.000Z",
-//     },
-//     {
-//         key: "daily-routine-template.md",
-//         sizeBytes: 24_102,
-//         lastModified: "2026-03-04T10:34:48.000Z",
-//     },
-//     {
-//         key: "appointment-notes.txt",
-//         sizeBytes: 15_119,
-//         lastModified: "2026-03-02T19:06:15.000Z",
-//     },
-// ];
 
 function assertConfigured(name: string, value: string) {
     if (!value) throw new Error(`${name} is not configured.`);
@@ -85,15 +68,13 @@ export async function deleteDocument(key: string): Promise<void> {
     // IMPORTANT: encode key so spaces/#/? don't break the URL
     const url = joinUrl(DOCS_API_BASE_URL, `${DOCS_API_DELETE_PATH}/${encodeURIComponent(key)}`);
     await fetchOrThrow(url, { method: "DELETE" });
+    await triggerKbSync();
 }
 
 
-
-
-function wait(ms: number) {
-    return new Promise<void>((resolve) => {
-        setTimeout(resolve, ms);
-    });
+async function triggerKbSync() {
+    assertConfigured("VITE_KB_SYNC_API_URL", KB_SYNC_API_URL);
+    await fetchOrThrow(KB_SYNC_API_URL, { method: "POST" });
 }
 
  
@@ -113,6 +94,7 @@ export async function uploadDocument(file: File): Promise<void> {
     // - do NOT set Content-Type manually
     // - browser will set multipart/form-data; boundary=...
   });
+  await triggerKbSync();
 }
 
 
@@ -123,3 +105,4 @@ void DOCS_API_BASE_URL;
 void DOCS_API_LIST_PATH;
 void DOCS_API_UPLOAD_PATH;
 void DOCS_API_DELETE_PATH;
+void KB_SYNC_API_URL;
