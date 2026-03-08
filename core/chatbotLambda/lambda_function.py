@@ -2,6 +2,7 @@ import json
 import boto3
 import logging
 import os
+import uuid
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -77,7 +78,15 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "4")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "5")
+
+        # add tag around query to aid guardrail processing
+        suffix = str(uuid.uuid4())[:8]
+        guardrail_input = f"""
+            <amazon-bedrock-guardrails-guardContent_{suffix}>
+            {body_str}
+            </amazon-bedrock-guardrails-guardContent_{suffix}>
+            """
 
         # Guardrail check
         guardrail_response = bedrock_runtime.apply_guardrail(
@@ -86,7 +95,7 @@ def lambda_handler(event, context):
             source="INPUT",
             content=[
                 {"text": {
-                    "text": body_str
+                    "text": guardrail_input
                     }
                 }
             ]
@@ -139,8 +148,10 @@ def lambda_handler(event, context):
             routing_mode = "crisis_tier3"
         elif 3 <= risk_score < 6:
             routing_mode = "crisis_tier2"
-        elif risk_score < 3:
+        elif risk_score < 3 and risk_score > 0:
             routing_mode = "crisis_tier1"
+
+        logger.info(f"crisis routing: {routing_mode}")
 
         if routing_mode:        # set routing mode parameter if crisis flagged
             session_state = {
