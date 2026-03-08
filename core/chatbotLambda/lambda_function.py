@@ -77,7 +77,7 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "3")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "4")
 
         # Guardrail check
         guardrail_response = bedrock_runtime.apply_guardrail(
@@ -100,10 +100,11 @@ def lambda_handler(event, context):
         assessments = guardrail_response.get("assessments", [])
 
         for assessment in assessments:
+            # denied topics
             topic_policy = assessment.get("topicPolicy", {})
             topics = topic_policy.get("topics", [])
 
-            for topic in topics:        # denied topics
+            for topic in topics:        
                 name = topic.get("name")
                 # compute risk of the query
                 if name == "Ambiguous Crisis_Self-Harm Language":       # tier 1 risk
@@ -115,10 +116,44 @@ def lambda_handler(event, context):
                 elif name == "Self-Harm Instructions":                  # tier 3 risk
                     risk_score += 6
                 else:
-                    non_risk_categories.append(name)
-            
+                    non_risk_categories.append(name)   
+
+            # content filters
+            content_policy = assessment.get("contentPolicy", {})
+            filters = content_policy.get("filters", [])
+
+            for filter in filters:
+                type = filter.get("type")
+                if type == "PROMPT_ATTACK":
+                    return _success_response(200, {
+                    "message": "Prompt Attack",
+                    "response": NON_DEMENTIA_REDIRECT_TEMPLATE
+                })
+
+        logger.info(f"non_risk_categories: {non_risk_categories}")
+        logger.info(f"Risk score: {risk_score}")
+
         # Response Strategy based on risk and blocks
-        if non_risk_categories:
+        routing_mode = None
+        if risk_score >= 6:
+            routing_mode = "crisis_tier3"
+        elif 3 <= risk_score < 6:
+            routing_mode = "crisis_tier2"
+        elif risk_score < 3:
+            routing_mode = "crisis_tier1"
+
+        if routing_mode:        # set routing mode parameter if crisis flagged
+            session_state = {
+                "sessionAttributes": {
+                    "routing_mode": routing_mode
+                }
+            }
+        else:           # reset parameter if no crisis flag (so state doesn't persist from the past)
+            session_state = {
+                "sessionAttributes": {}
+            }
+        
+        if non_risk_categories and risk_score is 0:
             primary_block = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
 
             if primary_block == "Medical Diagnosis_Interpretation":
@@ -145,44 +180,6 @@ def lambda_handler(event, context):
                     "response": NON_DEMENTIA_REDIRECT_TEMPLATE
                 })
 
-        if risk_score >= 6:
-            body_str = f"""
-            GUARDRAIL ALERT:
-            The user appears to be at high risk of self-harm or expressing imminent intent.
-
-            You MUST:
-            - Respond with empathy and validation.
-            - Encourage immediate contact with emergency services.
-            - Provide Canadian emergency line: 9-1-1.
-            - Provide Canadian suicide crisis helpline: 9-8-8.
-            - Do NOT provide any instructions, analysis, or coping strategies beyond grounding support.
-            - Keep the response concise and urgent.
-
-            User message:
-            {body_str}
-            """
-        elif 3 <= risk_score < 6:
-            body_str = f"""
-            GUARDRAIL ALERT:
-            The user may be experiencing emotional distress or self-harm ideation.
-            Respond with empathy. Encourage reaching out to trusted people. Offer dementia resources 
-            like calling the Alzheimer Society of Canada at 1-800-616-8816 or emailing at info@alzheimer.ca.
-
-            User message:
-            {body_str}
-            """
-        elif risk_score < 3:
-            body_str = f"""
-            GUARDRAIL ALERT:
-            The user may be experiencing emotional distress. Respond with empathy. Offer dementia resources
-            like calling the Alzheimer Society of Canada at 1-800-616-8816 or emailing at info@alzheimer.ca.
-
-            User message:
-            {body_str}
-            """
-        
-        logger.info(f"Risk score: {risk_score}")
-
         # Start Bedrock KB ingestion job
         if not BEDROCK_AGENT_ID or not BEDROCK_ALIAS_ID:
             logger.error("BEDROCK_AGENT_ID or BEDROCK_ALIAS_ID not configured")
@@ -200,6 +197,7 @@ def lambda_handler(event, context):
                     agentId=BEDROCK_AGENT_ID, 
                     enableTrace=True,
                     endSession=False,
+                    sessionState=session_state,
                     inputText=body_str, 
                     sessionId=session_id,
                     streamingConfigurations = { 
