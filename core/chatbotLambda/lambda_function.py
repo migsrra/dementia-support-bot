@@ -13,22 +13,14 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 BEDROCK_AGENT_ID = os.getenv("BEDROCK_AGENT_ID")
 BEDROCK_ALIAS_ID = os.getenv("BEDROCK_ALIAS_ID")
 
-MEDICAL_REDIRECT_TEMPLATE = """
-    I’m not able to provide medical diagnoses, interpret symptoms, or give advice on adjusting medications. 
-    For health concerns, please consult a qualified healthcare professional. 
+MAID_EUTHANESIA_TEMPLATE = """
+    I'm not able to respond to this request, please consult your physician.
 
-    I can, however, help with general dementia caregiving strategies, tips for daily routines, or behavioral support. 
+    I am here to help with general dementia caregiving strategies, tips for daily routines, or behavioral support. 
     Would you like guidance on any of those topics?
-    """
+"""
 
-LEGAL_REDIRECT_TEMPLATE = """
-    I’m not able to provide legal advice, draft legal documents, or guide financial decisions like wills, power of attorney, etc. 
-
-    However, I can support you with caregiving-related questions, like managing day-to-day care, planning routines, or behavioural support. 
-    Would you like help with any of those?
-    """
-
-NON_DEMENTIA_REDIRECT_TEMPLATE = """
+PROMPT_ATTACK_TEMPLATE = """
     I’m here to support questions specifically related to dementia caregiving. 
     I’m not able to provide guidance outside of that scope. 
 
@@ -100,11 +92,15 @@ def lambda_handler(event, context):
                 }
             ]
         )
+      
+        logger.info(json.dumps(guardrail_response, indent=2))
 
         risk_score = 0
         non_risk_categories = []
-
-        logger.info(json.dumps(guardrail_response, indent=2))
+        message = ""
+        response = ""
+        bypass_agent = False
+        hard_refusal = False
 
         assessments = guardrail_response.get("assessments", [])
 
@@ -124,6 +120,8 @@ def lambda_handler(event, context):
                     risk_score += 5
                 elif name == "Self-Harm Instructions":                  # tier 3 risk
                     risk_score += 6
+                elif name == "MAID_euthanesia":
+                    hard_refusal = True
                 else:
                     non_risk_categories.append(name)   
 
@@ -134,24 +132,41 @@ def lambda_handler(event, context):
             for filter in filters:
                 type = filter.get("type")
                 if type == "PROMPT_ATTACK":
-                    return _success_response(200, {
-                    "message": "Prompt Attack",
-                    "response": NON_DEMENTIA_REDIRECT_TEMPLATE
-                })
+                    message = "Prompt Attack"
+                    response = PROMPT_ATTACK_TEMPLATE
+                    bypass_agent = True
 
-        logger.info(f"non_risk_categories: {non_risk_categories}")
-        logger.info(f"Risk score: {risk_score}")
-
+        # logger.info(f"Risk score: {risk_score}")
+        # logger.info(f"non_risk_categories: {non_risk_categories}")
+        
         # Response Strategy based on risk and blocks
+        if hard_refusal:
+            message = "MAID_euthanesia boundary"
+            response = MAID_EUTHANESIA_TEMPLATE
+            bypass_agent = True
+        
         routing_mode = None
-        if risk_score >= 6:
+
+        # crisis routing
+        if risk_score >= 10:
             routing_mode = "crisis_tier3"
-        elif 3 <= risk_score < 6:
+        elif risk_score >= 5:
             routing_mode = "crisis_tier2"
-        elif risk_score < 3 and risk_score > 0:
+        elif risk_score > 0:
             routing_mode = "crisis_tier1"
 
-        logger.info(f"crisis routing: {routing_mode}")
+        # non-risk routing
+        if non_risk_categories and risk_score == 0:
+            primary_block = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
+
+            if primary_block == "Medical Diagnosis_Interpretation":
+                routing_mode = "Medical_boundary"
+            elif primary_block == "Medication Dosing_Changes":
+                routing_mode = "Medical_boundary"
+            elif primary_block == "Legal and High-Stakes Financial Execution":
+                routing_mode = "Legal_boundary"
+            elif primary_block == "Non-Dementia Related Queries":
+                routing_mode = "Scope_boundary"
 
         if routing_mode:        # set routing mode parameter if crisis flagged
             session_state = {
@@ -164,32 +179,7 @@ def lambda_handler(event, context):
                 "sessionAttributes": {}
             }
         
-        if non_risk_categories and risk_score is 0:
-            primary_block = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
-
-            if primary_block == "Medical Diagnosis_Interpretation":
-                return _success_response(200, {
-                    "message": "Medical boundary",
-                    "response": MEDICAL_REDIRECT_TEMPLATE
-                })
-
-            elif primary_block == "Medication Dosing_Changes":
-                return _success_response(200, {
-                    "message": "Medication boundary",
-                    "response": MEDICAL_REDIRECT_TEMPLATE
-                })
-
-            elif primary_block == "Legal and High-Stakes Financial Execution":
-                return _success_response(200, {
-                    "message": "Legal boundary",
-                    "response": LEGAL_REDIRECT_TEMPLATE
-                })
-
-            elif primary_block == "Non-Dementia Related Queries":
-                return _success_response(200, {
-                    "message": "Scope boundary",
-                    "response": NON_DEMENTIA_REDIRECT_TEMPLATE
-                })
+        # logger.info(f"routing: {routing_mode}")
 
         # Start Bedrock KB ingestion job
         if not BEDROCK_AGENT_ID or not BEDROCK_ALIAS_ID:
@@ -198,7 +188,7 @@ def lambda_handler(event, context):
         elif not session_id:
             logger.error("sessionID not received via path parameter")
             return _error_response(400, "Missing sessionID.")
-        else:
+        elif bypass_agent is False:
             try:
                 bedrock_client = session.client("bedrock-agent-runtime")
                 print("Attempting invocation")
@@ -230,15 +220,26 @@ def lambda_handler(event, context):
                         trace_event = event.get("trace")
                         print(f"trace: {trace_event}")
                 
+                message = "Agent invoked and returned response"
+                response = completion
                 print(f"Amount of events: {eventLen}")
                         
             except Exception as e:
                 logger.error(f"Failed to invoke agent: {e}")
                 return _error_response(500, "Failed to invoke Bedrock Agent")
 
+        # response_body = {
+        #     "message": "Agent invoked and returned response",
+        #     "response": response
+        # }
+
+        # response for testing, includes guardrail info for analysis
         response_body = {
-            "message": "Agent invoked and returned response",
-            "response": completion
+            "message": message,
+            "response": response,
+            "risk_score": risk_score,
+            "routing_mode": routing_mode,
+            "non_risk_categories": non_risk_categories
         }
 
         return _success_response(200, response_body)
