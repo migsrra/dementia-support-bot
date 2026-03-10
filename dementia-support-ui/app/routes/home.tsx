@@ -63,6 +63,71 @@ let nextMessageId = 2;
 let nextConversationId = 2;
 
 // Backend call function
+function formatCitationsInline(citations: unknown[]): string {
+  if (!citations?.length) return "";
+
+  const allUris: string[] = [];
+
+  citations.forEach((c) => {
+    const cit = c as any;
+    const refs = Array.isArray(cit?.retrievedReferences) ? cit.retrievedReferences : [];
+
+    refs.forEach((ref: any) => {
+      const uri =
+        ref?.location?.s3Location?.uri ??
+        ref?.location?.webLocation?.url ??
+        ref?.location?.uri ??
+        ref?.location?.path ??
+        null;
+
+      if (uri) allUris.push(String(uri));
+    });
+  });
+
+  // dedupe while keeping order
+  const uniq = allUris.filter((u, idx) => allUris.indexOf(u) === idx);
+
+  // shorten to just filenames (nicer UX)
+  const pretty = uniq.map((u, i) => {
+    const file = u.startsWith("s3://") ? u.split("/").pop() : u;
+    return `[${i + 1}] ${file}`;
+  });
+
+  return `\n\nSources:\n${pretty.join("\n")}`;
+}
+
+type AssistantReply = { text: string; citations: unknown[] };
+
+async function getAssistantReply(
+  prompt: string,
+  sessionID: string,
+  signal: AbortSignal,
+): Promise<AssistantReply> {
+  const trimmed = prompt.trim();
+  if (!trimmed) {
+    return { text: "Tell me a little more, and I will help.", citations: [] };
+  }
+
+  try {
+    const data = await invokeAgent(sessionID, trimmed, signal);
+
+    const citations = data.attribution?.citations ?? [];
+
+    const baseText = data.response || "Sorry, I couldn't get an answer right now.";
+
+    const text = baseText + formatCitationsInline(citations);
+    return { text, citations };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    console.error("invokeAgent error:", error);
+    return { text: "Sorry, I couldn't reach the assistant right now.", citations: [] };
+  }
+}
+
+/*
+   OLD getAssistantReply (REFERENCE ONLY)
+   Kept from Miguel’s working version before we embedded sources in output.
+
 async function getAssistantReply(
   prompt: string,
   sessionID: string,
@@ -85,7 +150,7 @@ async function getAssistantReply(
     // return chatbot response
     return { text: data.response };
   } catch (error) {
-    // catches exeptions like failures and aborts
+    // catches exceptions like failures and aborts
     // timeout exception
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error; // UI will handle cancellation
@@ -95,6 +160,7 @@ async function getAssistantReply(
     return { text: "Sorry, I couldn't reach the assistant right now." };
   }
 }
+*/
 
 // frontend, updates UI automatically when states change
 export default function Home() {
@@ -309,7 +375,7 @@ export default function Home() {
                       <Text size="sm" fw={600} className="message-label">
                         {message.role === "assistant" ? "Assistant" : "You"}
                       </Text>
-                      <Text>{message.text}</Text>
+                      <Text style={{ whiteSpace: "pre-wrap" }}>{message.text}</Text>
                     </Paper>
                   ))}
                   {isSending && activeConversation ? (
