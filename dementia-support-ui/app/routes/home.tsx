@@ -13,13 +13,15 @@ import {
 } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
+import { invokeAgent } from "~/api/chatbotClient";
 
 export function meta({}: Route.MetaArgs) {
   return [
     { title: "Dementia Support Chat" },
     {
       name: "description",
-      content: "Supportive, calm conversations powered by a RAG knowledge base.",
+      content:
+        "Supportive, calm conversations powered by a RAG knowledge base.",
     },
   ];
 }
@@ -32,17 +34,28 @@ type ChatMessage = {
 
 type Conversation = {
   id: number;
+  sessionID: string;
   title: string;
   messages: ChatMessage[];
 };
+
+function createSessionId() {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${Date.now()}-${randomPart}`;
+}
 
 // Initial data
 const seedMessages: ChatMessage[] = [
   {
     id: 1,
     role: "assistant",
-    text:
-      "How can I help you today?",
+    text: "How can I help you today?",
   },
 ];
 
@@ -50,53 +63,37 @@ let nextMessageId = 2;
 let nextConversationId = 2;
 
 // Backend call function
-async function getAssistantReply(prompt: string, conversationId: string, signal: AbortSignal) {
-  
+async function getAssistantReply(
+  prompt: string,
+  sessionID: string,
+  signal: AbortSignal,
+) {
   // removing whitespace and returning early if empty
   const trimmed = prompt.trim();
-  if (!trimmed) {  return { text: "Tell me a little more, and I will help." }; }
+  if (!trimmed) {
+    return { text: "Tell me a little more, and I will help." };
+  }
 
   try {
-    // sent request to backend, blocks
-    const response = await fetch("http://localhost:8000/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user_id: "demo_user",
-        conversation_id: conversationId,
-        message: trimmed,
-      }),
-      signal,   // signal sent by UI
-    });
-
-    // error handling
-    if (!response.ok) {
-      const errorBody = await response.json().catch(() => null);
-      return {
-        text:
-          errorBody?.error ||
-          errorBody?.detail ||
-          `Backend error (${response.status})`,
-      };
-    }
-
-    // parse success response
-    const data = await response.json();
+    const data = await invokeAgent(sessionID, trimmed, signal);
 
     // error check
-    if (!data?.answer) { return { text: "Sorry, I couldn't get an answer right now." }; }
+    if (!data?.response) {
+      return { text: "Sorry, I couldn't get an answer right now." };
+    }
 
     // return chatbot response
-    return { text: data.answer, conversationId: data.conversation_id || conversationId };
-  } catch (error) {   // catches exeptions like failures and aborts
+    return { text: data.response };
+  } catch (error) {
+    // catches exeptions like failures and aborts
     // timeout exception
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw error;    // UI will handle cancellation
+      throw error; // UI will handle cancellation
     }
     console.error("getAssistantReply error:", error);
     // generic exception handle
     return { text: "Sorry, I couldn't reach the assistant right now." };
-  } 
+  }
 }
 
 // frontend, updates UI automatically when states change
@@ -105,6 +102,7 @@ export default function Home() {
   const [conversations, setConversations] = useState<Conversation[]>([
     {
       id: 1,
+      sessionID: createSessionId(),
       title: "New Conversation",
       messages: seedMessages,
     },
@@ -116,8 +114,9 @@ export default function Home() {
   const [controller, setController] = useState<AbortController | null>(null);
 
   const activeConversation =
-    conversations.find((conversation) => conversation.id === activeConversationId) ??
-    conversations[0];
+    conversations.find(
+      (conversation) => conversation.id === activeConversationId,
+    ) ?? conversations[0];
 
   // run after render if something changed
   useEffect(() => {
@@ -132,6 +131,7 @@ export default function Home() {
   function handleNewConversation() {
     const newConversation: Conversation = {
       id: nextConversationId++,
+      sessionID: createSessionId(),
       title: `New conversation ${nextConversationId - 1}`,
       messages: [
         {
@@ -183,7 +183,11 @@ export default function Home() {
 
     // send message to backend, return with chatbot response
     try {
-      const reply = await getAssistantReply(trimmed, String(activeConversation.id), newController.signal);
+      const reply = await getAssistantReply(
+        trimmed,
+        activeConversation.sessionID,
+        newController.signal,
+      );
       const assistantMessage: ChatMessage = {
         id: nextMessageId++,
         role: "assistant",
@@ -212,9 +216,12 @@ export default function Home() {
         setConversations((current) =>
           current.map((conversation) =>
             conversation.id === activeConversation.id
-              ? { ...conversation, messages: [...conversation.messages, cancelledMessage] }
-              : conversation
-          )
+              ? {
+                  ...conversation,
+                  messages: [...conversation.messages, cancelledMessage],
+                }
+              : conversation,
+          ),
         );
       }
     } finally {
@@ -245,7 +252,11 @@ export default function Home() {
               {conversations.map((conversation) => (
                 <Button
                   key={conversation.id}
-                  variant={conversation.id === activeConversationId ? "filled" : "subtle"}
+                  variant={
+                    conversation.id === activeConversationId
+                      ? "filled"
+                      : "subtle"
+                  }
                   color="teal"
                   justify="flex-start"
                   className="conversation-button"
@@ -301,6 +312,26 @@ export default function Home() {
                       <Text>{message.text}</Text>
                     </Paper>
                   ))}
+                  {isSending && activeConversation ? (
+                    <Paper
+                      className="message"
+                      data-role="assistant"
+                      p="md"
+                      radius="lg"
+                    >
+                      <Text size="sm" fw={600} className="message-label">
+                        Assistant
+                      </Text>
+                      <Text
+                        className="typing-indicator"
+                        aria-label="Assistant is typing"
+                      >
+                        <span>.</span>
+                        <span>.</span>
+                        <span>.</span>
+                      </Text>
+                    </Paper>
+                  ) : null}
                 </Stack>
               </ScrollArea>
 
