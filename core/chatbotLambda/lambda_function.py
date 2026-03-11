@@ -203,6 +203,8 @@ def lambda_handler(event, context):
                     }
                 )
                 completion = ""
+                attribution = None
+                attribution_citations = []
                 eventLen = 0
                 for event in response.get("completion"):
                     #Collect agent output.
@@ -210,6 +212,11 @@ def lambda_handler(event, context):
                     if 'chunk' in event:
                         chunk = event.get("chunk")
                         completion += chunk["bytes"].decode()
+                        chunk_attribution = chunk.get("attribution")
+                        if chunk_attribution and isinstance(chunk_attribution, dict):
+                            citations = chunk_attribution.get("citations")
+                            if isinstance(citations, list):
+                                attribution_citations.extend(citations)
                         print(f"chunk: {chunk}")
                     
                     # Log trace output.
@@ -220,6 +227,8 @@ def lambda_handler(event, context):
                 message = routing_mode
                 response = completion
                 print(f"Amount of events: {eventLen}")
+                if attribution_citations:
+                    attribution = {"citations": attribution_citations}
                         
             except Exception as e:
                 logger.error(f"Failed to invoke agent: {e}")
@@ -227,7 +236,7 @@ def lambda_handler(event, context):
 
         # response_body = {
         #     "message": "Agent invoked and returned response",
-        #     "response": response
+        #     "response": completion
         # }
 
         # response for testing, includes guardrail info for analysis
@@ -238,6 +247,9 @@ def lambda_handler(event, context):
             "routing_mode": routing_mode,
             "non_risk_categories": non_risk_categories
         }
+        
+        if attribution is not None:
+            response_body["attribution"] = attribution
 
         return _success_response(200, response_body)
     
