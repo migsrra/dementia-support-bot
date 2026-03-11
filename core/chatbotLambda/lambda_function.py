@@ -118,7 +118,9 @@ def lambda_handler(event, context):
                 elif name == "T3_Explicit Self-Harm Intent":               # tier 3 risk
                     risk_score += 5
                 elif name == "Self-Harm Instructions":                  # tier 3 risk
-                    risk_score += 6
+                    risk_score += 5
+                elif name == "Harming_others":                  # tier 3 risk
+                    risk_score += 5
                 elif name == "MAID_euthanesia":
                     message = "MAID_euthanesia boundary"
                     response = MAID_EUTHANESIA_TEMPLATE
@@ -247,7 +249,7 @@ def lambda_handler(event, context):
             "routing_mode": routing_mode,
             "non_risk_categories": non_risk_categories
         }
-        
+
         if attribution is not None:
             response_body["attribution"] = attribution
 
