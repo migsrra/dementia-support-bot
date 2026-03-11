@@ -18,14 +18,18 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
+  cancelDocumentUpload,
   type DocumentItem,
   deleteDocument,
   listDocuments,
+  uploadDocumentAnyway,
+  type UploadRejectedResponse,
   uploadDocument,
 } from "~/api/documentsClient";
 
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".pdf", ".txt", ".doc", ".docx", ".md"];
+const SUCCESS_ALERT_TTL_MS = 4500;
 const ACCEPTED_MIME_TYPES = new Set([
   "application/pdf",
   "text/plain",
@@ -36,6 +40,16 @@ const ACCEPTED_MIME_TYPES = new Set([
 ]);
 
 type SortDirection = "asc" | "desc";
+
+type UploadDecisionState = {
+  fileName: string;
+  response: UploadRejectedResponse;
+} | null;
+
+type UploadSuccessState = {
+  title: string;
+  message: string;
+} | null;
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -80,8 +94,10 @@ export default function DocIngestion() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+  const [uploadSuccess, setUploadSuccess] = useState<UploadSuccessState>(null);
+  const [uploadDecision, setUploadDecision] = useState<UploadDecisionState>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isResolvingRejectedUpload, setIsResolvingRejectedUpload] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [pendingDeleteKey, setPendingDeleteKey] = useState<string | null>(null);
@@ -89,6 +105,19 @@ export default function DocIngestion() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function getRejectedUploadMessage(reason: string, fileName: string) {
+    switch (reason) {
+      case "unable_to_extract_text":
+        return `No readable text could be extracted from ${fileName}. Review the document before adding it to the dementia knowledge base.`;
+      case "possible_phi_detected":
+        return `${fileName} may contain protected health information. Review it carefully before adding it to the dementia knowledge base.`;
+      case "not_relevant":
+        return `${fileName} does not appear relevant to the dementia knowledge base.`;
+      default:
+        return `${fileName} requires manual review before it can be added to the dementia knowledge base.`;
+    }
+  }
 
   const loadDocuments = useCallback(async () => {
     setIsLoading(true);
@@ -123,6 +152,30 @@ export default function DocIngestion() {
     };
   }, [isUploading]);
 
+  useEffect(() => {
+    if (!uploadSuccess) return;
+
+    const timer = window.setTimeout(() => {
+      setUploadSuccess(null);
+    }, SUCCESS_ALERT_TTL_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [uploadSuccess]);
+
+  useEffect(() => {
+    if (!deleteSuccess) return;
+
+    const timer = window.setTimeout(() => {
+      setDeleteSuccess(null);
+    }, SUCCESS_ALERT_TTL_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [deleteSuccess]);
+
   const filteredAndSortedDocuments = useMemo(() => {
     const filtered = documents.filter((document) =>
       document.key.toLowerCase().includes(filterText.toLowerCase()),
@@ -151,7 +204,7 @@ export default function DocIngestion() {
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    if (isUploading) return;
+    if (isUploading || uploadDecision) return;
     const file = event.dataTransfer.files?.[0] ?? null;
     handlePickedFile(file);
   }
@@ -173,6 +226,7 @@ export default function DocIngestion() {
     setUploadError(null);
     setDeleteError(null);
     setUploadSuccess(null);
+    setUploadDecision(null);
     setIsUploading(true);
     setDocuments((current) => [
       optimisticItem,
@@ -180,12 +234,24 @@ export default function DocIngestion() {
     ]);
 
     try {
-      await uploadDocument(selectedFile);
+      const response = await uploadDocument(selectedFile);
       setUploadProgress(100);
-      await loadDocuments();
-      setUploadSuccess(`Uploaded ${selectedFile.name}`);
-      setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      if (response.status === "accepted") {
+        await loadDocuments();
+        setUploadSuccess({
+          title: "Upload complete",
+          message: `Uploaded ${selectedFile.name}`,
+        });
+        setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      } else {
+        setDocuments(previousDocuments);
+        setUploadDecision({
+          fileName: selectedFile.name,
+          response,
+        });
+      }
     } catch (error) {
       setDocuments(previousDocuments);
       const message = error instanceof Error ? error.message : "Upload failed.";
@@ -201,6 +267,60 @@ export default function DocIngestion() {
     setDeleteSuccess(null);
     setPendingDeleteKey(key);
     setIsDeleteModalOpen(true);
+  }
+
+  async function handleCancelRejectedUpload() {
+    if (!uploadDecision?.response.quarantineKey || isResolvingRejectedUpload) return;
+
+    setIsResolvingRejectedUpload(true);
+    setUploadError(null);
+    try {
+      await cancelDocumentUpload(uploadDecision.response.quarantineKey);
+      setUploadDecision(null);
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setUploadSuccess({
+        title: "Upload cancelled",
+        message: `Cancelled upload for ${uploadDecision.fileName}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Cancel upload failed.";
+      setUploadError(message);
+    } finally {
+      setIsResolvingRejectedUpload(false);
+    }
+  }
+
+  async function handleUploadAnyway() {
+    if (
+      !uploadDecision?.response.uploadId ||
+      !uploadDecision.response.quarantineKey ||
+      isResolvingRejectedUpload
+    ) {
+      return;
+    }
+
+    setIsResolvingRejectedUpload(true);
+    setUploadError(null);
+    try {
+      await uploadDocumentAnyway(
+        uploadDecision.response.uploadId,
+        uploadDecision.response.quarantineKey,
+      );
+      setUploadDecision(null);
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      await loadDocuments();
+      setUploadSuccess({
+        title: "Upload complete",
+        message: `Uploaded ${uploadDecision.fileName}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Upload anyway failed.";
+      setUploadError(message);
+    } finally {
+      setIsResolvingRejectedUpload(false);
+    }
   }
 
   async function confirmDelete() {
@@ -253,6 +373,10 @@ export default function DocIngestion() {
                 p="lg"
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
+                style={{
+                  opacity: uploadDecision ? 0.6 : 1,
+                  pointerEvents: uploadDecision ? "none" : undefined,
+                }}
               >
                 <Stack gap="sm" align="center">
                   <Text fw={600}>Drag and drop a file here</Text>
@@ -265,12 +389,12 @@ export default function DocIngestion() {
                     accept={ACCEPTED_EXTENSIONS.join(",")}
                     className="hidden-file-input"
                     onChange={(event) => handlePickedFile(event.currentTarget.files?.[0] ?? null)}
-                    disabled={isUploading}
+                    disabled={isUploading || Boolean(uploadDecision)}
                   />
                   <Button
                     variant="default"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={isUploading}
+                    disabled={isUploading || Boolean(uploadDecision)}
                   >
                     Choose File
                   </Button>
@@ -286,7 +410,11 @@ export default function DocIngestion() {
                         {formatSize(selectedFile.size)}
                       </Text>
                     </div>
-                    <Button onClick={handleUpload} loading={isUploading} disabled={isUploading}>
+                    <Button
+                      onClick={handleUpload}
+                      loading={isUploading}
+                      disabled={isUploading || Boolean(uploadDecision)}
+                    >
                       Upload
                     </Button>
                   </Group>
@@ -311,12 +439,42 @@ export default function DocIngestion() {
                 <Alert
                   color="teal"
                   variant="light"
-                  title="Upload complete"
+                  title={uploadSuccess.title}
                   withCloseButton
                   closeButtonLabel="Dismiss upload success"
                   onClose={() => setUploadSuccess(null)}
                 >
-                  {uploadSuccess}
+                  {uploadSuccess.message}
+                </Alert>
+              ) : null}
+              {uploadDecision ? (
+                <Alert color="yellow" variant="light" title="Document review required">
+                  <Stack gap="sm">
+                    <Text size="sm">
+                      {getRejectedUploadMessage(
+                        uploadDecision.response.reason,
+                        uploadDecision.fileName,
+                      )}
+                    </Text>
+                    <Group gap="sm">
+                      <Button
+                        variant="default"
+                        onClick={() => void handleCancelRejectedUpload()}
+                        loading={isResolvingRejectedUpload}
+                        disabled={isResolvingRejectedUpload}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        color="yellow"
+                        onClick={() => void handleUploadAnyway()}
+                        loading={isResolvingRejectedUpload}
+                        disabled={isResolvingRejectedUpload}
+                      >
+                        Upload anyway
+                      </Button>
+                    </Group>
+                  </Stack>
                 </Alert>
               ) : null}
             </Stack>
