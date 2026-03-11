@@ -263,6 +263,7 @@ def lambda_handler(event, context):
                 return _success_response(200, {
                     "status": "rejected",
                     "reason": "unable_to_extract_text",
+                    "uploadId": upload_id,
                     "quarantineKey": rejected_key,
                 })
             except Exception as e:
@@ -287,6 +288,7 @@ def lambda_handler(event, context):
                 return _success_response(200, {
                     "status": "rejected",
                     "reason": "possible_phi_detected",
+                    "uploadId": upload_id,
                     "quarantineKey": rejected_key,
                 })
             except Exception as e:
