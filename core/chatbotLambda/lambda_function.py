@@ -56,6 +56,8 @@ def lambda_handler(event, context):
         session = _build_session()
         path_params = event.get("pathParameters") or {}
         session_id = path_params.get("sessionID") if isinstance(path_params, dict) else None
+        completion = ""
+        attribution = None
 
         body = event.get("body")
         body_str = body if isinstance(body, str) else None
@@ -99,6 +101,7 @@ def lambda_handler(event, context):
         non_risk_categories = []
         message = ""
         response = ""
+        routing_mode = None
         bypass_agent = False
 
         assessments = guardrail_response.get("assessments", [])
@@ -144,7 +147,7 @@ def lambda_handler(event, context):
         
         # Response Strategy based on risk and blocks, only if not hard refusal
         if bypass_agent is False:
-            routing_mode = None
+            routing_mode = "Allowed"
 
             # crisis routing
             if risk_score >= 10:
@@ -204,8 +207,6 @@ def lambda_handler(event, context):
                         "streamFinalResponse" : False
                     }
                 )
-                completion = ""
-                attribution = None
                 attribution_citations = []
                 eventLen = 0
                 for event in response.get("completion"):
