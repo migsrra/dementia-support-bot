@@ -70,7 +70,7 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "5")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "6")
 
         # add tag around query to aid guardrail processing
         suffix = str(uuid.uuid4())[:8]
@@ -100,7 +100,6 @@ def lambda_handler(event, context):
         message = ""
         response = ""
         bypass_agent = False
-        hard_refusal = False
 
         assessments = guardrail_response.get("assessments", [])
 
@@ -112,16 +111,18 @@ def lambda_handler(event, context):
             for topic in topics:        
                 name = topic.get("name")
                 # compute risk of the query
-                if name == "Ambiguous Crisis_Self-Harm Language":       # tier 1 risk
+                if name == "T1_Emotional Distress":                        # tier 1 risk
                     risk_score += 1
-                elif name == "Emotional Distress":                      # tier 2 risk
+                elif name == "T2_Ambiguous Crisis_Self-Harm Language":     # tier 2 risk
                     risk_score += 3
-                elif name == "Explicit Self-Harm Intent":               # tier 3 risk
+                elif name == "T3_Explicit Self-Harm Intent":               # tier 3 risk
                     risk_score += 5
                 elif name == "Self-Harm Instructions":                  # tier 3 risk
                     risk_score += 6
                 elif name == "MAID_euthanesia":
-                    hard_refusal = True
+                    message = "MAID_euthanesia boundary"
+                    response = MAID_EUTHANESIA_TEMPLATE
+                    bypass_agent = True
                 else:
                     non_risk_categories.append(name)   
 
@@ -139,47 +140,43 @@ def lambda_handler(event, context):
         # logger.info(f"Risk score: {risk_score}")
         # logger.info(f"non_risk_categories: {non_risk_categories}")
         
-        # Response Strategy based on risk and blocks
-        if hard_refusal:
-            message = "MAID_euthanesia boundary"
-            response = MAID_EUTHANESIA_TEMPLATE
-            bypass_agent = True
-        
-        routing_mode = None
+        # Response Strategy based on risk and blocks, only if not hard refusal
+        if bypass_agent is False:
+            routing_mode = None
 
-        # crisis routing
-        if risk_score >= 10:
-            routing_mode = "crisis_tier3"
-        elif risk_score >= 5:
-            routing_mode = "crisis_tier2"
-        elif risk_score > 0:
-            routing_mode = "crisis_tier1"
+            # crisis routing
+            if risk_score >= 10:
+                routing_mode = "crisis_tier3"
+            elif risk_score >= 5:
+                routing_mode = "crisis_tier2"
+            elif risk_score > 0:
+                routing_mode = "crisis_tier1"
 
-        # non-risk routing
-        if non_risk_categories and risk_score == 0:
-            primary_block = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
+            # non-risk routing
+            if non_risk_categories and risk_score == 0:
+                primary_block = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
 
-            if primary_block == "Medical Diagnosis_Interpretation":
-                routing_mode = "Medical_boundary"
-            elif primary_block == "Medication Dosing_Changes":
-                routing_mode = "Medical_boundary"
-            elif primary_block == "Legal and High-Stakes Financial Execution":
-                routing_mode = "Legal_boundary"
-            elif primary_block == "Non-Dementia Related Queries":
-                routing_mode = "Scope_boundary"
+                if primary_block == "Medical Diagnosis_Interpretation":
+                    routing_mode = "Medical_boundary"
+                elif primary_block == "Medication Dosing_Changes":
+                    routing_mode = "Medical_boundary"
+                elif primary_block == "Legal and High-Stakes Financial Execution":
+                    routing_mode = "Legal_boundary"
+                elif primary_block == "Non-Dementia Related Queries":
+                    routing_mode = "Scope_boundary"
 
-        if routing_mode:        # set routing mode parameter if crisis flagged
-            session_state = {
-                "sessionAttributes": {
-                    "routing_mode": routing_mode
+            if routing_mode:        # set routing mode parameter if crisis flagged
+                session_state = {
+                    "sessionAttributes": {
+                        "routing_mode": routing_mode
+                    }
                 }
-            }
-        else:           # reset parameter if no crisis flag (so state doesn't persist from the past)
-            session_state = {
-                "sessionAttributes": {}
-            }
-        
-        # logger.info(f"routing: {routing_mode}")
+            else:           # reset parameter if no crisis flag (so state doesn't persist from the past)
+                session_state = {
+                    "sessionAttributes": {}
+                }
+            
+            # logger.info(f"routing: {routing_mode}")
 
         # Start Bedrock KB ingestion job
         if not BEDROCK_AGENT_ID or not BEDROCK_ALIAS_ID:
@@ -220,7 +217,7 @@ def lambda_handler(event, context):
                         trace_event = event.get("trace")
                         print(f"trace: {trace_event}")
                 
-                message = "Agent invoked and returned response"
+                message = routing_mode
                 response = completion
                 print(f"Amount of events: {eventLen}")
                         
