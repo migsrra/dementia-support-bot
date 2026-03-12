@@ -86,8 +86,49 @@ def chunk_text_for_phi(text: str, max_bytes: int = MAX_PHI_TEXT_BYTES) -> list[s
     return chunks
 
 
-def has_phi(comprehend_medical_client, text: str) -> bool:
-    for chunk in chunk_text_for_phi(text):
+def _normalize_phi_entity(entity: dict, chunk_index: int) -> dict:
+    return {
+        "text": entity.get("Text"),
+        "type": entity.get("Type"),
+        "category": entity.get("Category"),
+        "score": entity.get("Score"),
+        "beginOffset": entity.get("BeginOffset"),
+        "endOffset": entity.get("EndOffset"),
+        "chunkIndex": chunk_index,
+        "traits": [
+            {
+                "name": trait.get("Name"),
+                "score": trait.get("Score"),
+            }
+            for trait in entity.get("Traits", [])
+        ],
+        "attributes": [
+            {
+                "type": attribute.get("Type"),
+                "category": attribute.get("Category"),
+                "score": attribute.get("Score"),
+                "text": attribute.get("Text"),
+                "relationshipScore": attribute.get("RelationshipScore"),
+                "relationshipType": attribute.get("RelationshipType"),
+                "beginOffset": attribute.get("BeginOffset"),
+                "endOffset": attribute.get("EndOffset"),
+                "traits": [
+                    {
+                        "name": trait.get("Name"),
+                        "score": trait.get("Score"),
+                    }
+                    for trait in attribute.get("Traits", [])
+                ],
+            }
+            for attribute in entity.get("Attributes", [])
+        ],
+    }
+
+
+def has_phi(comprehend_medical_client, text: str) -> list[dict]:
+    detected_entities = []
+
+    for chunk_index, chunk in enumerate(chunk_text_for_phi(text)):
         response = comprehend_medical_client.detect_phi(Text=chunk)
         entities = response.get("Entities", [])
         if entities:
@@ -99,9 +140,9 @@ def has_phi(comprehend_medical_client, text: str) -> bool:
                     entity.get("Score"),
                     entity.get("Category"),
                 )
-            return True
+                detected_entities.append(_normalize_phi_entity(entity, chunk_index))
 
-    return False
+    return detected_entities
 
 
 def is_relevant_stub(text: str) -> tuple[bool, str]:
@@ -273,13 +314,13 @@ def lambda_handler(event, context):
 
         # PHI screen
         try:
-            has_phi_result = has_phi(comprehend_medical, text)
+            phi_entities = has_phi(comprehend_medical, text)
         except Exception as e:
             logger.error(f"PHI screening failed for file: {file_name}")
             logger.exception("Full traceback:")
             return _error_response(500, "Failed to perform PHI screening")
 
-        if has_phi_result:
+        if phi_entities:
             try:
                 logger.info(f"PHI detected in file: {file_name}. Moving to rejected/.")
                 move_object(s3_client, screening_bucket_name, pending_key, screening_bucket_name, rejected_key)
@@ -290,6 +331,7 @@ def lambda_handler(event, context):
                     "reason": "possible_phi_detected",
                     "uploadId": upload_id,
                     "quarantineKey": rejected_key,
+                    "entities": phi_entities,
                 })
             except Exception as e:
                 logger.error(f"Failed to move PHI-flagged file to rejected/: {file_name}")
@@ -345,4 +387,3 @@ def lambda_handler(event, context):
     except Exception as exc:
         logger.exception("Unexpected error")
         return _error_response(500, f"Internal server error: {str(exc)}")
-
