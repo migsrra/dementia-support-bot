@@ -22,6 +22,7 @@ import {
   type DocumentItem,
   deleteDocument,
   listDocuments,
+  type UploadPhiEntity,
   uploadDocumentAnyway,
   type UploadRejectedResponse,
   uploadDocument,
@@ -30,6 +31,7 @@ import {
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".pdf", ".txt", ".doc", ".docx", ".md"];
 const SUCCESS_ALERT_TTL_MS = 4500;
+const INITIAL_PHI_ENTITY_COUNT = 10;
 const ACCEPTED_MIME_TYPES = new Set([
   "application/pdf",
   "text/plain",
@@ -86,6 +88,20 @@ function validateFile(file: File) {
   return null;
 }
 
+function formatPhiScore(score?: number) {
+  if (typeof score !== "number") return "Unknown";
+  return `${(score * 100).toFixed(1)}%`;
+}
+
+function getPhiEntityLabel(entity: UploadPhiEntity) {
+  const category =
+    entity.category && entity.category !== "PROTECTED_HEALTH_INFORMATION"
+      ? entity.category
+      : undefined;
+  const parts = [entity.type, category].filter(Boolean);
+  return parts.length > 0 ? parts.join(" • ") : "Unknown PHI entity";
+}
+
 export default function DocIngestion() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -96,6 +112,7 @@ export default function DocIngestion() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<UploadSuccessState>(null);
   const [uploadDecision, setUploadDecision] = useState<UploadDecisionState>(null);
+  const [visiblePhiEntityCount, setVisiblePhiEntityCount] = useState(INITIAL_PHI_ENTITY_COUNT);
   const [isUploading, setIsUploading] = useState(false);
   const [isResolvingRejectedUpload, setIsResolvingRejectedUpload] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -176,6 +193,10 @@ export default function DocIngestion() {
     };
   }, [deleteSuccess]);
 
+  useEffect(() => {
+    setVisiblePhiEntityCount(INITIAL_PHI_ENTITY_COUNT);
+  }, [uploadDecision]);
+
   const filteredAndSortedDocuments = useMemo(() => {
     const filtered = documents.filter((document) =>
       document.key.toLowerCase().includes(filterText.toLowerCase()),
@@ -185,6 +206,16 @@ export default function DocIngestion() {
       return sortDirection === "asc" ? result : -result;
     });
   }, [documents, filterText, sortDirection]);
+
+  const visiblePhiEntities = useMemo(() => {
+    const entities = uploadDecision?.response.entities ?? [];
+    return entities.slice(0, visiblePhiEntityCount);
+  }, [uploadDecision, visiblePhiEntityCount]);
+
+  const remainingPhiEntityCount = useMemo(() => {
+    const total = uploadDecision?.response.entities?.length ?? 0;
+    return Math.max(total - visiblePhiEntities.length, 0);
+  }, [uploadDecision, visiblePhiEntities.length]);
 
   function handlePickedFile(file: File | null) {
     setUploadError(null);
@@ -456,6 +487,53 @@ export default function DocIngestion() {
                         uploadDecision.fileName,
                       )}
                     </Text>
+                    {uploadDecision.response.reason === "possible_phi_detected" &&
+                    uploadDecision.response.entities?.length ? (
+                      <Paper withBorder radius="md" p="sm">
+                        <Stack gap={6}>
+                          <Text size="sm" fw={600}>
+                            Detected PHI entities ({uploadDecision.response.entities.length})
+                          </Text>
+                          {visiblePhiEntities.map((entity, index) => (
+                            <Text key={`${entity.type}-${entity.text}-${index}`} size="sm">
+                              {index + 1}. {getPhiEntityLabel(entity)} | Text:{" "}
+                              {entity.text || "Unknown"} | Confidence:{" "}
+                              {formatPhiScore(entity.score)}
+                            </Text>
+                          ))}
+                          {uploadDecision.response.entities.length > visiblePhiEntities.length ? (
+                            <Group gap="xs">
+                              <Button
+                                size="xs"
+                                variant="default"
+                                onClick={() =>
+                                  setVisiblePhiEntityCount((current) =>
+                                    Math.min(
+                                      current + INITIAL_PHI_ENTITY_COUNT,
+                                      uploadDecision.response.entities?.length ?? current,
+                                    ),
+                                  )
+                                }
+                              >
+                                Show {Math.min(INITIAL_PHI_ENTITY_COUNT, remainingPhiEntityCount)} more
+                              </Button>
+                              <Button
+                                size="xs"
+                                variant="subtle"
+                                onClick={() =>
+                                  setVisiblePhiEntityCount(
+                                    uploadDecision.response.entities?.length ??
+                                      INITIAL_PHI_ENTITY_COUNT,
+                                  )
+                                }
+                              >
+                                Show all
+                              </Button>
+                            </Group>
+                          ) : null}
+                        </Stack>
+                      </Paper>
+                    ) : null}
                     <Group gap="sm">
                       <Button
                         variant="default"

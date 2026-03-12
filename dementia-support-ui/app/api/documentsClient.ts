@@ -16,11 +16,41 @@ export type UploadRejectedReason =
     | "not_relevant"
     | string;
 
+export type UploadPhiTrait = {
+    name?: string;
+    score?: number;
+};
+
+export type UploadPhiAttribute = {
+    type?: string;
+    category?: string;
+    score?: number;
+    text?: string;
+    relationshipScore?: number;
+    relationshipType?: string;
+    beginOffset?: number;
+    endOffset?: number;
+    traits?: UploadPhiTrait[];
+};
+
+export type UploadPhiEntity = {
+    text?: string;
+    type?: string;
+    category?: string;
+    score?: number;
+    beginOffset?: number;
+    endOffset?: number;
+    chunkIndex?: number;
+    traits?: UploadPhiTrait[];
+    attributes?: UploadPhiAttribute[];
+};
+
 export type UploadRejectedResponse = {
     status: "rejected";
     reason: UploadRejectedReason;
     uploadId?: string;
     quarantineKey?: string;
+    entities?: UploadPhiEntity[];
 };
 
 export type UploadDocumentResponse = UploadAcceptedResponse | UploadRejectedResponse;
