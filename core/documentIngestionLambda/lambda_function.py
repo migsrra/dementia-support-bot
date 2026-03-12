@@ -22,6 +22,7 @@ S3_SCREENING_BUCKET_NAME = os.getenv("S3_SCREENING_BUCKET_NAME")
 S3_KB_BUCKET_NAME = os.getenv("S3_KB_BUCKET_NAME")
 
 MAX_PHI_TEXT_BYTES = 18000
+PHI_CONFIDENCE_THRESHOLD = 0.8
 
 def _build_session():
     logger.info("Building boto3 session")
@@ -123,6 +124,89 @@ def _normalize_phi_entity(entity: dict, chunk_index: int) -> dict:
             for attribute in entity.get("Attributes", [])
         ],
     }
+
+
+def _get_phi_group_meta(entity_type: str | None) -> tuple[str, int]:
+    if entity_type == "NAME":
+        return "Names", 1
+    if entity_type == "PHONE_OR_FAX":
+        return "Phone Numbers", 2
+    if entity_type == "EMAIL":
+        return "Emails", 3
+    if entity_type == "ADDRESS":
+        return "Addresses", 4
+    if entity_type == "DATE":
+        return "Dates", 5
+    if entity_type == "ID":
+        return "IDs", 6
+    if entity_type == "URL":
+        return "URLs", 7
+    if entity_type == "AGE":
+        return "Ages", 8
+    if entity_type == "PROFESSION":
+        return "Professions", 9
+    if not entity_type:
+        return "Other", 99
+
+    return " ".join(part.capitalize() for part in entity_type.lower().split("_")), 99
+
+
+def _normalize_phi_value(text: str | None) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip()).lower()
+
+
+def build_phi_groups(entities: list[dict]) -> list[dict]:
+    groups = {}
+
+    for entity in entities:
+        text = (entity.get("text") or "").strip()
+        score = entity.get("score") or 0
+        if not text or score < PHI_CONFIDENCE_THRESHOLD:
+            continue
+
+        group_key = entity.get("type") or entity.get("category") or "OTHER"
+        label, order = _get_phi_group_meta(entity.get("type"))
+        group = groups.get(group_key)
+
+        if not group:
+            group = {
+                "key": group_key,
+                "label": label,
+                "order": order,
+                "items": [],
+            }
+            groups[group_key] = group
+
+        normalized_text = _normalize_phi_value(text)
+        existing_item = next(
+            (item for item in group["items"] if _normalize_phi_value(item.get("text")) == normalized_text),
+            None,
+        )
+
+        candidate_item = {
+            "text": text,
+            "score": score,
+        }
+
+        if existing_item is None:
+            group["items"].append(candidate_item)
+        elif score > (existing_item.get("score") or 0):
+            existing_item.update(candidate_item)
+
+    return sorted(
+        (
+            {
+                "key": group["key"],
+                "label": group["label"],
+                "items": sorted(group["items"], key=lambda item: item.get("score") or 0, reverse=True),
+            }
+            for group in groups.values()
+        ),
+        key=lambda group: (
+            _get_phi_group_meta(group["key"])[1],
+            group["label"],
+        ),
+    )
 
 
 def has_phi(comprehend_medical_client, text: str) -> list[dict]:
@@ -315,6 +399,7 @@ def lambda_handler(event, context):
         # PHI screen
         try:
             phi_entities = has_phi(comprehend_medical, text)
+            phi_groups = build_phi_groups(phi_entities)
         except Exception as e:
             logger.error(f"PHI screening failed for file: {file_name}")
             logger.exception("Full traceback:")
@@ -331,7 +416,7 @@ def lambda_handler(event, context):
                     "reason": "possible_phi_detected",
                     "uploadId": upload_id,
                     "quarantineKey": rejected_key,
-                    "entities": phi_entities,
+                    "phiGroups": phi_groups,
                 })
             except Exception as e:
                 logger.error(f"Failed to move PHI-flagged file to rejected/: {file_name}")
