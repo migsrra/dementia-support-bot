@@ -24,6 +24,39 @@ S3_KB_BUCKET_NAME = os.getenv("S3_KB_BUCKET_NAME")
 MAX_PHI_TEXT_BYTES = 18000
 PHI_CONFIDENCE_THRESHOLD = 0.8
 
+MODEL_ID = "amazon.nova-micro-v1:0"
+
+T_PROMPT = """
+You are a document relevance classifier for a dementia knowledge base.
+
+A document is relevant if it is substantially about:
+- dementia
+- Alzheimer's disease
+- cognitive impairment
+- memory loss
+- caregiver support
+- dementia care, diagnosis, management, behaviours, safety, long-term care
+
+A document is not relevant if it is mainly about:
+- unrelated medical specialties
+- administration
+- billing
+- logistics
+- employment
+- generic forms
+- unrelated research
+
+Return JSON only in this exact format:
+{{
+  "is_relevant": true,
+  "confidence": 0.0,
+  "reason": "short explanation"
+}}
+
+Document text:
+{document_text}
+"""
+
 def _build_session():
     logger.info("Building boto3 session")
     if AWS_PROFILE:
@@ -228,22 +261,6 @@ def has_phi(comprehend_medical_client, text: str) -> list[dict]:
 
     return detected_entities
 
-
-def is_relevant_stub(text: str) -> tuple[bool, str]:
-    """
-    Replace with Bedrock later.
-    Very cheap temporary fallback:
-    """
-    lowered = text.lower()
-    keywords = [
-        "dementia", "alzheimer", "alzheimer's", "memory loss",
-        "cognitive decline", "caregiver", "neurodegenerative"
-    ]
-    if any(k in lowered for k in keywords):
-        return True, "keyword match"
-    return False, "no dementia-related terms found"
-
-
 def move_object(s3_client, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str):
     s3_client.copy_object(
         Bucket=dst_bucket,
@@ -252,6 +269,27 @@ def move_object(s3_client, src_bucket: str, src_key: str, dst_bucket: str, dst_k
         MetadataDirective="COPY",
     )
     s3_client.delete_object(Bucket=src_bucket, Key=src_key)
+
+def check_relevance_with_bedrock(text: str, bedrock) -> dict:
+    prompt = T_PROMPT.format(document_text=text[:12000])
+
+    response = bedrock.converse(
+        modelId=MODEL_ID,
+        messages=[
+            {
+                "role": "user",
+                "content": [{"text": prompt}]
+            }
+        ],
+        inferenceConfig={
+            "temperature": 0,
+            "maxTokens": 300
+        }
+    )
+
+    output_text = response["output"]["message"]["content"][0]["text"]
+    return json.loads(output_text)
+
 
 def lambda_handler(event, context):
     try:
@@ -338,14 +376,16 @@ def lambda_handler(event, context):
             file_name = file_name + '.pdf'
 
         ###############################################################################################################
-        # Eventually use this part of code to verify relevancy with either 1. Guardrail or 2. Dedicated Bedrock Agent #
+        # Upload to Screening S3, perform PHI and Relevance check before acceptance into KB S3                        #
         ###############################################################################################################
 
         # Upload to S3
         session = _build_session()
         s3_client = session.client("s3")
         comprehend_medical = session.client("comprehendmedical")
-        logger.info("Built boto3, comprehendmedical sessions, and s3 client")
+        bedrock = boto3.client("bedrock-runtime", region_name = AWS_REGION)
+        
+        logger.info("Built boto3, comprehendmedical sessions, and bedrock and s3 clients")
         
         
         # Create unique ID to prevent key conflict in s3
@@ -373,13 +413,13 @@ def lambda_handler(event, context):
 
         # Extract text
         try:
-            text = extract_pdf_text(BytesIO(file_bytes))
+            extracted_text = extract_pdf_text(BytesIO(file_bytes))
         except Exception as e:
             logger.error(f"Text extraction failed for file: {file_name}")
             logger.exception("Full traceback:")
             return _error_response(500, "Failed to extract text from PDF")
 
-        if not text:
+        if not extracted_text:
             try:
                 logger.info(f"No extractable text found for file: {file_name}. Moving to rejected/.")
                 move_object(s3_client, screening_bucket_name, pending_key, screening_bucket_name, rejected_key)
@@ -398,7 +438,7 @@ def lambda_handler(event, context):
 
         # PHI screen
         try:
-            phi_entities = has_phi(comprehend_medical, text)
+            phi_entities = has_phi(comprehend_medical, extracted_text)
             phi_groups = build_phi_groups(phi_entities)
         except Exception as e:
             logger.error(f"PHI screening failed for file: {file_name}")
@@ -422,6 +462,33 @@ def lambda_handler(event, context):
                 logger.error(f"Failed to move PHI-flagged file to rejected/: {file_name}")
                 logger.exception("Full traceback:")
                 return _error_response(500, "Failed to reject document")
+                
+                
+                
+                
+                
+                
+                
+        relevance_result = check_relevance_with_bedrock(extracted_text, bedrock)
+
+        if not relevance_result["is_relevant"]:
+            return _success_response(200, {
+                "status": "rejected",
+                "reason": "not_relevant",
+                "description": relevance_result["reason"],
+                "confidence": relevance_result.get("confidence"),
+                "uploadId": upload_id,
+                "quarantineKey": rejected_key
+            })
+                        
+                        
+                
+                
+                
+                
+                
+                
+                
                 
 
         # Accepted -> copy into KB bucket, then delete from screening bucket
