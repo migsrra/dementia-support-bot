@@ -195,7 +195,9 @@ def lambda_handler(event, context):
                         "streamFinalResponse" : False
                     }
                 )
+                
                 completion = ""
+                retrieved_context = ""
                 attribution = None
                 attribution_citations = []
                 eventLen = 0
@@ -205,25 +207,111 @@ def lambda_handler(event, context):
                     if 'chunk' in event:
                         chunk = event.get("chunk")
                         completion += chunk["bytes"].decode()
-                        chunk_attribution = chunk.get("attribution")
+
+                        # miguel old references code
+                        # chunk_attribution = chunk.get("attribution")
+                        # if chunk_attribution and isinstance(chunk_attribution, dict):
+                        #     citations = chunk_attribution.get("citations")
+                        #     if isinstance(citations, list):
+                        #         attribution_citations.extend(citations)
+
+                        chunk_attribution = chunk.get("attribution", {})
                         if chunk_attribution and isinstance(chunk_attribution, dict):
-                            citations = chunk_attribution.get("citations")
-                            if isinstance(citations, list):
+                            citations = chunk_attribution.get("citations", [])
+                            if isinstance(citations, list) and len(citations) > 0:
                                 attribution_citations.extend(citations)
+                                
+                                for cit in citations:
+                                    refs = cit.get("retrievedReferences", [])
+                                    # print(f"DEBUG: Found {len(refs)} references in this citation")
+                                    
+                                    for ref in refs:
+                                        content = ref.get("content", {})
+                                        text = content.get("text", "")
+                                        if text:
+                                            retrieved_context += f"\n{text}"
+                                            # print(f"DEBUG: Added {len(text)} chars to context")
+                                        
                         print(f"chunk: {chunk}")
                     
                     # Log trace output.
                     if 'trace' in event:
                         trace_event = event.get("trace")
                         print(f"trace: {trace_event}")
-                
+                    
+                # Create a list of lines, strip whitespace, and use a set to unique them
+                unique_lines = list(dict.fromkeys([line.strip() for line in retrieved_context.split("\n") if line.strip()]))
+                clean_context = "\n".join(unique_lines)
+
+                # print("DEBUG RESPONSE", completion)
+                # print("DEBUG CONTEXT", clean_context)
+
+                grounding_score = None
+                grounding_action = None
+                relevance_score = None
+                relevance_action = None
+
+                if clean_context and routing_mode == "Allowed":         # only check grounding and relevance if allowed topic
+                    try:
+                        guardrail_check = bedrock_runtime.apply_guardrail(
+                            guardrailIdentifier=GUARDRAIL_ID,
+                            guardrailVersion=GUARDRAIL_VERSION,
+                            source="OUTPUT",
+                            content=[
+                                {
+                                    "text": {
+                                        "text": body_str, 
+                                        "qualifiers": ["query"]
+                                    }
+                                },
+                                {
+                                    "text": {
+                                        "text": clean_context, 
+                                        "qualifiers": ["grounding_source"]
+                                    }
+                                },
+                                {
+                                    "text": {
+                                        "text": completion, 
+                                        "qualifiers": ["guard_content"]
+                                    }
+                                }
+                            ]
+                        )
+        
+                        # Extract specific scores for your dementia bot logic
+                        for assessment in guardrail_check.get("assessments", []):
+                            grounding_policy = assessment.get("contextualGroundingPolicy", {})
+
+                            for filter_obj in grounding_policy.get("filters", []):
+                                score = filter_obj.get("score")
+                                filter_type = filter_obj.get("type") # 'GROUNDING' or 'RELEVANCE'
+                                filter_action = filter_obj.get("action")
+
+                                if filter_type == "GROUNDING":
+                                    grounding_score = score
+                                    grounding_action = filter_action
+                                else:
+                                    relevance_score = score
+                                    relevance_action = filter_action
+                                
+                                # Custom threshold logic (optional)
+                                if filter_type == "GROUNDING" and grounding_action == "BLOCKED":
+                                    print("Low grounding detected. Agent might be hallucinating.")
+                                elif filter_type == "RELEVANCE" and relevance_action == "BLOCKED":
+                                    print("Low relevance detected.")
+
+                    except Exception as e:
+                        print(f"Error calling Guardrail API: {e}")
+
+                # save output values
+                response = completion
                 message = routing_mode
 
-                response = completion
                 print(f"Amount of events: {eventLen}")
                 if attribution_citations:
                     attribution = {"citations": attribution_citations}
-                        
+
             except Exception as e:
                 logger.error(f"Failed to invoke agent: {e}")
                 return _error_response(500, "Failed to invoke Bedrock Agent")
@@ -240,6 +328,10 @@ def lambda_handler(event, context):
             "risk_score": risk_score,
             # "routing_mode": routing_mode,
             # "non_risk_categories": non_risk_categories
+            "grounding_score": grounding_score,
+            "grounding_action": grounding_action,
+            "relevance_score": relevance_score,
+            "relevance_action": relevance_action
         }
 
         if attribution is not None:
