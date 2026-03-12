@@ -57,9 +57,13 @@ def extract_final_filename(quarantine_key: str, upload_id: str) -> str:
         raise ValueError("Override is only allowed for rejected/ objects")
 
     leaf = quarantine_key[len("rejected/"):]
+    _, _, file_component = leaf.rpartition("/")
+    if not file_component:
+        logger.error("Missing filename in quarantineKey: %s", quarantine_key)
+        raise ValueError("Missing filename in quarantineKey")
 
     expected_prefix = f"{upload_id}-"
-    if not leaf.startswith(expected_prefix):
+    if not file_component.startswith(expected_prefix):
         logger.error(
             "quarantineKey does not match uploadId: quarantine_key=%s upload_id=%s expected_prefix=%s",
             quarantine_key,
@@ -68,7 +72,7 @@ def extract_final_filename(quarantine_key: str, upload_id: str) -> str:
         )
         raise ValueError("quarantineKey does not match uploadId")
 
-    final_name = leaf[len(expected_prefix):].strip()
+    final_name = file_component[len(expected_prefix):].strip()
     if not final_name:
         logger.error("Missing filename in quarantineKey: %s", quarantine_key)
         raise ValueError("Missing filename in quarantineKey")
