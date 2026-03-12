@@ -70,7 +70,7 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "6")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "7")
 
         # add tag around query to aid guardrail processing
         suffix = str(uuid.uuid4())[:8]
@@ -111,17 +111,17 @@ def lambda_handler(event, context):
             for topic in topics:        
                 name = topic.get("name")
                 # compute risk of the query
-                if name == "T1_Emotional Distress":                        # tier 1 risk
+                if name == "T1_Emotional_Distress":                        # tier 1 risk
                     risk_score += 1
-                elif name == "T2_Ambiguous Crisis_Self-Harm Language":     # tier 2 risk
+                elif name == "T2_Ambiguous_Crisis_Self_Harm_Language":     # tier 2 risk
                     risk_score += 3
-                elif name == "T3_Explicit Self-Harm Intent":               # tier 3 risk
+                elif name == "T3_Explicit_Self_Harm_Intent":               # tier 3 risk
                     risk_score += 5
-                elif name == "Self-Harm Instructions":                  # tier 3 risk
+                elif name == "Self_Harm_Instructions":                  # tier 3 risk
                     risk_score += 5
-                elif name == "Harming_others":                  # tier 3 risk
+                elif name == "Harming_Others":                  # tier 3 risk
                     risk_score += 5
-                elif name == "MAID_euthanesia":
+                elif name == "MAID_euthanesia":     # hard refusal, bypass agent
                     message = "MAID_euthanesia boundary"
                     response = MAID_EUTHANESIA_TEMPLATE
                     bypass_agent = True
@@ -134,7 +134,7 @@ def lambda_handler(event, context):
 
             for filter in filters:
                 type = filter.get("type")
-                if type == "PROMPT_ATTACK":
+                if type == "PROMPT_ATTACK":     # hard refusal, bypass agent
                     message = "Prompt Attack"
                     response = PROMPT_ATTACK_TEMPLATE
                     bypass_agent = True
@@ -143,31 +143,22 @@ def lambda_handler(event, context):
         # logger.info(f"non_risk_categories: {non_risk_categories}")
         
         # Response Strategy based on risk and blocks, only if not hard refusal
-        if bypass_agent is False:
-            routing_mode = None
+        routing_mode = "Allowed"
 
+        if bypass_agent is False:
             # crisis routing
             if risk_score >= 10:
-                routing_mode = "crisis_tier3"
+                routing_mode = "T3_Explicit_Self_Harm_Intent"
             elif risk_score >= 5:
-                routing_mode = "crisis_tier2"
+                routing_mode = "T2_Ambiguous_Crisis_Self_Harm_Language"
             elif risk_score > 0:
-                routing_mode = "crisis_tier1"
+                routing_mode = "T1_Emotional_Distress"
 
             # non-risk routing
             if non_risk_categories and risk_score == 0:
-                primary_block = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
+                routing_mode = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
 
-                if primary_block == "Medical Diagnosis_Interpretation":
-                    routing_mode = "Medical_boundary"
-                elif primary_block == "Medication Dosing_Changes":
-                    routing_mode = "Medical_boundary"
-                elif primary_block == "Legal and High-Stakes Financial Execution":
-                    routing_mode = "Legal_boundary"
-                elif primary_block == "Non-Dementia Related Queries":
-                    routing_mode = "Scope_boundary"
-
-            if routing_mode:        # set routing mode parameter if crisis flagged
+            if routing_mode != "Allowed":        # set routing mode parameter if crisis flagged
                 session_state = {
                     "sessionAttributes": {
                         "routing_mode": routing_mode
@@ -227,6 +218,7 @@ def lambda_handler(event, context):
                         print(f"trace: {trace_event}")
                 
                 message = routing_mode
+
                 response = completion
                 print(f"Amount of events: {eventLen}")
                 if attribution_citations:
@@ -246,8 +238,8 @@ def lambda_handler(event, context):
             "message": message,
             "response": response,
             "risk_score": risk_score,
-            "routing_mode": routing_mode,
-            "non_risk_categories": non_risk_categories
+            # "routing_mode": routing_mode,
+            # "non_risk_categories": non_risk_categories
         }
 
         if attribution is not None:
