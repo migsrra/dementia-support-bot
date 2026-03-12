@@ -8,11 +8,13 @@ export type UploadAcceptedResponse = {
     status: "accepted";
     message?: string;
     kbKey?: string;
+    screeningSummary?: UploadScreeningSummary;
 };
 
 export type UploadRejectedReason =
     | "unable_to_extract_text"
     | "possible_phi_detected"
+    | "possible_phi_detected_and_not_relevant"
     | "not_relevant"
     | string;
 
@@ -27,12 +29,19 @@ export type UploadPhiGroup = {
     items: UploadPhiDisplayItem[];
 };
 
+export type UploadScreeningSummary = {
+    phiDetected: boolean;
+    isRelevant: boolean;
+    relevanceReason?: string;
+};
+
 export type UploadRejectedResponse = {
     status: "rejected";
     reason: UploadRejectedReason;
     uploadId?: string;
     quarantineKey?: string;
     phiGroups?: UploadPhiGroup[];
+    screeningSummary?: UploadScreeningSummary;
 };
 
 export type UploadDocumentResponse = UploadAcceptedResponse | UploadRejectedResponse;
