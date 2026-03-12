@@ -22,6 +22,7 @@ import {
   type DocumentItem,
   deleteDocument,
   listDocuments,
+  type UploadScreeningSummary,
   uploadDocumentAnyway,
   type UploadPhiGroup,
   type UploadRejectedResponse,
@@ -30,7 +31,7 @@ import {
 
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".pdf", ".txt", ".doc", ".docx", ".md"];
-const SUCCESS_ALERT_TTL_MS = 4500;
+const SUCCESS_ALERT_TTL_MS = 10000;
 const INITIAL_PHI_GROUP_EXAMPLE_COUNT = 5;
 const ACCEPTED_MIME_TYPES = new Set([
   "application/pdf",
@@ -51,6 +52,7 @@ type UploadDecisionState = {
 type UploadSuccessState = {
   title: string;
   message: string;
+  screeningSummary?: UploadScreeningSummary;
 } | null;
 
 type PhiGroup = {
@@ -99,6 +101,100 @@ function formatPhiScore(score?: number) {
   return `${(score * 100).toFixed(1)}%`;
 }
 
+function getRejectedPhiStatus(response: UploadRejectedResponse) {
+  const phiDetected =
+    response.screeningSummary?.phiDetected ||
+    response.reason === "possible_phi_detected" ||
+    response.reason === "possible_phi_detected_and_not_relevant";
+
+  return phiDetected
+    ? "Review required. Potential protected health information was identified."
+    : response.reason === "unable_to_extract_text"
+      ? "Not completed. No readable text was available for PHI screening."
+      : "Passed. No protected health information was detected.";
+}
+
+function getRejectedRelevanceStatus(response: UploadRejectedResponse) {
+  const isNotRelevant =
+    response.screeningSummary?.isRelevant === false ||
+    response.reason === "not_relevant" ||
+    response.reason === "possible_phi_detected_and_not_relevant";
+
+  return isNotRelevant
+    ? "Review required. The document does not appear relevant to the dementia knowledge base."
+    : response.reason === "unable_to_extract_text"
+      ? "Not completed. No readable text was available for relevance screening."
+      : "Passed. The document appears relevant to the dementia knowledge base.";
+}
+
+function getAcceptedPhiStatus(summary?: UploadScreeningSummary) {
+  return summary?.phiDetected
+    ? "Review required. Potential protected health information was identified."
+    : "Passed. No protected health information was detected.";
+}
+
+function getAcceptedRelevanceStatus(summary?: UploadScreeningSummary) {
+  return summary?.isRelevant === false
+    ? "Review required. The document does not appear relevant to the dementia knowledge base."
+    : "Passed. The document appears relevant to the dementia knowledge base.";
+}
+
+function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName: string) {
+  const summary = response.screeningSummary;
+  const phiDetected =
+    summary?.phiDetected ||
+    response.reason === "possible_phi_detected" ||
+    response.reason === "possible_phi_detected_and_not_relevant";
+  const isNotRelevant =
+    summary?.isRelevant === false ||
+    response.reason === "not_relevant" ||
+    response.reason === "possible_phi_detected_and_not_relevant";
+
+  if (phiDetected && isNotRelevant) {
+    return (
+      <>
+        <strong>"{fileName}"</strong> may contain <strong>Protected Health Information (PHI)</strong>{" "}
+        and does not appear <strong>relevant</strong> to the dementia knowledge base. Review the
+        document before adding it.
+      </>
+    );
+  }
+
+  if (phiDetected) {
+    return (
+      <>
+        <strong>"{fileName}"</strong> may contain <strong>Protected Health Information (PHI)</strong>.
+        Review the document before adding it to the dementia knowledge base.
+      </>
+    );
+  }
+
+  if (isNotRelevant) {
+    return (
+      <>
+        <strong>{fileName}</strong> does not appear <strong>relevant</strong> to the dementia
+        knowledge base. Review the document before adding it.
+      </>
+    );
+  }
+
+  if (response.reason === "unable_to_extract_text") {
+    return (
+      <>
+        <strong>No readable text</strong> could be extracted from <strong>{fileName}</strong>.
+        Review the document before adding it to the dementia knowledge base.
+      </>
+    );
+  }
+
+  return (
+    <>
+      <strong>{fileName}</strong> requires <strong>manual review</strong> before it can be added to
+      the dementia knowledge base.
+    </>
+  );
+}
+
 export default function DocIngestion() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -119,19 +215,6 @@ export default function DocIngestion() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  function getRejectedUploadMessage(reason: string, fileName: string) {
-    switch (reason) {
-      case "unable_to_extract_text":
-        return `No readable text could be extracted from ${fileName}. Review the document before adding it to the dementia knowledge base.`;
-      case "possible_phi_detected":
-        return `${fileName} may contain protected health information. Review it carefully before adding it to the dementia knowledge base.`;
-      case "not_relevant":
-        return `${fileName} does not appear relevant to the dementia knowledge base.`;
-      default:
-        return `${fileName} requires manual review before it can be added to the dementia knowledge base.`;
-    }
-  }
 
   const loadDocuments = useCallback(async () => {
     setIsLoading(true);
@@ -268,6 +351,7 @@ export default function DocIngestion() {
         setUploadSuccess({
           title: "Upload complete",
           message: `Uploaded ${selectedFile.name}`,
+          screeningSummary: response.screeningSummary,
         });
         setSelectedFile(null);
         if (fileInputRef.current) fileInputRef.current.value = "";
@@ -470,44 +554,68 @@ export default function DocIngestion() {
                   closeButtonLabel="Dismiss upload success"
                   onClose={() => setUploadSuccess(null)}
                 >
-                  {uploadSuccess.message}
+                  <Stack gap={4}>
+                    <Text size="sm">{uploadSuccess.message}</Text>
+                    {uploadSuccess.screeningSummary ? (
+                      <>
+                        <Text size="sm">
+                          <strong>PHI screening:</strong>{" "}
+                          {getAcceptedPhiStatus(uploadSuccess.screeningSummary)}
+                        </Text>
+                        <Text size="sm">
+                          <strong>Relevance assessment:</strong>{" "}
+                          {getAcceptedRelevanceStatus(uploadSuccess.screeningSummary)}
+                        </Text>
+                      </>
+                    ) : null}
+                  </Stack>
                 </Alert>
               ) : null}
               {uploadDecision ? (
                 <Alert color="yellow" variant="light" title="Document review required">
                   <Stack gap="sm">
+                    <Stack gap={4}>
+                      <Text size="sm">
+                        <strong>PHI screening:</strong>{" "}
+                        {getRejectedPhiStatus(uploadDecision.response)}
+                      </Text>
+                      <Text size="sm">
+                        <strong>Relevance assessment:</strong>{" "}
+                        {getRejectedRelevanceStatus(uploadDecision.response)}
+                      </Text>
+                    </Stack>
                     <Text size="sm">
-                      {uploadDecision.response.reason === "possible_phi_detected" ? (
-                        <>
-                          <strong>"{uploadDecision.fileName}"</strong> may contain{" "}
-                          <strong>Protected Health Information (PHI)</strong>. Review the document before
-                          adding it to the dementia knowledge base.
-                        </>
-                      ) : uploadDecision.response.reason === "unable_to_extract_text" ? (
-                        <>
-                          <strong>No readable text</strong> could be extracted from{" "}
-                          <strong>{uploadDecision.fileName}</strong>. Review the document before
-                          adding it to the dementia knowledge base.
-                        </>
-                      ) : uploadDecision.response.reason === "not_relevant" ? (
-                        <>
-                          <strong>{uploadDecision.fileName}</strong> does not appear{" "}
-                          <strong>relevant</strong> to the dementia knowledge base. Review the document before
-                          adding it to the dementia knowledge base.
-                        </>
-                      ) : (
-                        <>
-                          <strong>{uploadDecision.fileName}</strong> requires{" "}
-                          <strong>manual review</strong> before it can be added to the dementia
-                          knowledge base.
-                        </>
+                      {formatRejectedUploadSummary(
+                        uploadDecision.response,
+                        uploadDecision.fileName,
                       )}
                     </Text>
-                    {uploadDecision.response.reason === "possible_phi_detected" ? (
+                    {uploadDecision.response.screeningSummary?.isRelevant === false ||
+                    uploadDecision.response.reason === "not_relevant" ||
+                    uploadDecision.response.reason === "possible_phi_detected_and_not_relevant" ? (
+                      <Paper withBorder radius="md" p="sm">
+                        <Stack gap={4}>
+                          <Text size="sm" fw={600}>
+                            Relevance screening
+                          </Text>
+                          <Text size="sm">
+                            Result: <strong>Not relevant</strong>
+                          </Text>
+                          {uploadDecision.response.screeningSummary?.relevanceReason ? (
+                            <Text size="sm">
+                              Reason: {uploadDecision.response.screeningSummary.relevanceReason}
+                            </Text>
+                          ) : null}
+                        </Stack>
+                      </Paper>
+                    ) : null}
+                    {uploadDecision.response.screeningSummary?.phiDetected ||
+                    uploadDecision.response.reason === "possible_phi_detected" ||
+                    uploadDecision.response.reason === "possible_phi_detected_and_not_relevant" ? (
                       <Paper withBorder radius="md" p="sm">
                         <Stack gap={6}>
                           <Text size="sm" fw={600}>
-                            Detected categories
+                            PHI Screening: Detected Categories
                           </Text>
                           {filteredPhiGroups.length ? (
                             filteredPhiGroups.map((group) => {

@@ -25,6 +25,7 @@ MAX_PHI_TEXT_BYTES = 18000
 PHI_CONFIDENCE_THRESHOLD = 0.8
 
 MODEL_ID = "amazon.nova-micro-v1:0"
+MAX_RELEVANCE_TEXT_CHARS = 12000
 
 T_PROMPT = """
 You are a document relevance classifier for a dementia knowledge base.
@@ -49,7 +50,6 @@ A document is not relevant if it is mainly about:
 Return JSON only in this exact format:
 {{
   "is_relevant": true,
-  "confidence": 0.0,
   "reason": "short explanation"
 }}
 
@@ -242,24 +242,89 @@ def build_phi_groups(entities: list[dict]) -> list[dict]:
     )
 
 
-def has_phi(comprehend_medical_client, text: str) -> list[dict]:
+def _resolve_entity_span(chunk: str, entity: dict) -> tuple[int, int] | None:
+    start = entity.get("BeginOffset")
+    end = entity.get("EndOffset")
+    entity_text = entity.get("Text")
+
+    if isinstance(start, int) and isinstance(end, int) and 0 <= start < len(chunk):
+        candidate_spans = []
+        if start < end <= len(chunk):
+            candidate_spans.append((start, end))
+        if start <= end < len(chunk):
+            candidate_spans.append((start, end + 1))
+
+        for candidate_start, candidate_end in candidate_spans:
+            if entity_text and chunk[candidate_start:candidate_end] == entity_text:
+                return candidate_start, candidate_end
+
+        if start < end <= len(chunk):
+            return start, end
+
+    if entity_text:
+        found_at = chunk.find(entity_text)
+        if found_at != -1:
+            return found_at, found_at + len(entity_text)
+
+    return None
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not spans:
+        return []
+
+    merged_spans = [sorted(spans, key=lambda span: (span[0], span[1]))[0]]
+    for start, end in sorted(spans, key=lambda span: (span[0], span[1]))[1:]:
+        previous_start, previous_end = merged_spans[-1]
+        if start <= previous_end:
+            merged_spans[-1] = (previous_start, max(previous_end, end))
+        else:
+            merged_spans.append((start, end))
+
+    return merged_spans
+
+
+def _redact_chunk(chunk: str, raw_entities: list[dict]) -> str:
+    spans = []
+
+    for entity in raw_entities:
+        span = _resolve_entity_span(chunk, entity)
+        if span is not None:
+            spans.append(span)
+
+    if not spans:
+        return chunk
+
+    redacted_chunk = chunk
+    for start, end in reversed(_merge_spans(spans)):
+        redacted_chunk = f"{redacted_chunk[:start]}[REDACTED_PHI]{redacted_chunk[end:]}"
+
+    return redacted_chunk
+
+
+def screen_phi_and_redact(comprehend_medical_client, text: str) -> tuple[list[dict], str]:
     detected_entities = []
+    redacted_chunks = []
 
     for chunk_index, chunk in enumerate(chunk_text_for_phi(text)):
         response = comprehend_medical_client.detect_phi(Text=chunk)
-        entities = response.get("Entities", [])
-        if entities:
-            for entity in entities:
-                logger.info(
-                    "Detected PHI entity: text=%r type=%s score=%s category=%s",
-                    entity.get("Text"),
-                    entity.get("Type"),
-                    entity.get("Score"),
-                    entity.get("Category"),
-                )
-                detected_entities.append(_normalize_phi_entity(entity, chunk_index))
+        raw_entities = response.get("Entities", [])
 
-    return detected_entities
+        for entity in raw_entities:
+            logger.info(
+                "Detected PHI entity: text=%r type=%s score=%s category=%s",
+                entity.get("Text"),
+                entity.get("Type"),
+                entity.get("Score"),
+                entity.get("Category"),
+            )
+            detected_entities.append(_normalize_phi_entity(entity, chunk_index))
+
+        redacted_chunks.append(_redact_chunk(chunk, raw_entities))
+
+    redacted_text = "\n".join(chunk for chunk in redacted_chunks if chunk.strip()).strip()
+    return detected_entities, redacted_text
+
 
 def move_object(s3_client, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str):
     s3_client.copy_object(
@@ -270,10 +335,33 @@ def move_object(s3_client, src_bucket: str, src_key: str, dst_bucket: str, dst_k
     )
     s3_client.delete_object(Bucket=src_bucket, Key=src_key)
 
-def check_relevance_with_bedrock(text: str, bedrock) -> dict:
-    prompt = T_PROMPT.format(document_text=text[:12000])
+def _extract_json_object(text: str) -> dict:
+    candidate = text.strip()
 
-    response = bedrock.converse(
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```(?:json)?\s*", "", candidate)
+        candidate = re.sub(r"\s*```$", "", candidate)
+
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", candidate, re.DOTALL)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+def check_relevance_with_bedrock(text: str, bedrock_client) -> dict:
+    clean_text = text[:MAX_RELEVANCE_TEXT_CHARS].strip()
+    if not clean_text:
+        return {
+            "is_relevant": False,
+            "reason": "No non-PHI content remained after redaction for relevance screening.",
+        }
+
+    prompt = T_PROMPT.format(document_text=clean_text)
+
+    response = bedrock_client.converse(
         modelId=MODEL_ID,
         messages=[
             {
@@ -288,7 +376,55 @@ def check_relevance_with_bedrock(text: str, bedrock) -> dict:
     )
 
     output_text = response["output"]["message"]["content"][0]["text"]
-    return json.loads(output_text)
+    return _extract_json_object(output_text)
+
+
+def _build_screening_summary(phi_detected: bool, relevance_result: dict) -> dict:
+    return {
+        "phiDetected": phi_detected,
+        "isRelevant": bool(relevance_result.get("is_relevant")),
+        "relevanceReason": relevance_result.get("reason"),
+    }
+
+
+def _build_rejection_reason(phi_detected: bool, is_relevant: bool) -> str:
+    if phi_detected and not is_relevant:
+        return "possible_phi_detected_and_not_relevant"
+    if phi_detected:
+        return "possible_phi_detected"
+    if not is_relevant:
+        return "not_relevant"
+    return "manual_review"
+
+
+def _build_rejected_response(
+    upload_id: str,
+    rejected_key: str,
+    phi_detected: bool,
+    relevance_result: dict,
+    phi_groups: list[dict],
+) -> dict:
+    is_relevant = bool(relevance_result.get("is_relevant"))
+    return {
+        "status": "rejected",
+        "reason": _build_rejection_reason(phi_detected, is_relevant),
+        "uploadId": upload_id,
+        "quarantineKey": rejected_key,
+        "phiGroups": phi_groups,
+        "screeningSummary": _build_screening_summary(phi_detected, relevance_result),
+    }
+
+
+def _build_accepted_response(accepted_key: str) -> dict:
+    return {
+        "status": "accepted",
+        "message": "Document accepted and copied to KB bucket",
+        "kbKey": accepted_key,
+        "screeningSummary": {
+            "phiDetected": False,
+            "isRelevant": True,
+        },
+    }
 
 
 def lambda_handler(event, context):
@@ -383,7 +519,7 @@ def lambda_handler(event, context):
         session = _build_session()
         s3_client = session.client("s3")
         comprehend_medical = session.client("comprehendmedical")
-        bedrock = boto3.client("bedrock-runtime", region_name = AWS_REGION)
+        bedrock = session.client("bedrock-runtime")
         
         logger.info("Built boto3, comprehendmedical sessions, and bedrock and s3 clients")
         
@@ -436,60 +572,50 @@ def lambda_handler(event, context):
                 logger.exception("Full traceback:")
                 return _error_response(500, "Failed to reject document")
 
-        # PHI screen
+        # PHI screen and redaction for relevance review
         try:
-            phi_entities = has_phi(comprehend_medical, extracted_text)
+            phi_entities, redacted_text = screen_phi_and_redact(comprehend_medical, extracted_text)
             phi_groups = build_phi_groups(phi_entities)
         except Exception as e:
             logger.error(f"PHI screening failed for file: {file_name}")
             logger.exception("Full traceback:")
             return _error_response(500, "Failed to perform PHI screening")
 
-        if phi_entities:
+        try:
+            relevance_result = check_relevance_with_bedrock(redacted_text, bedrock)
+        except Exception as e:
+            logger.error(f"Relevance screening failed for file: {file_name}")
+            logger.exception("Full traceback:")
+            return _error_response(500, "Failed to perform relevance screening")
+
+        phi_detected = bool(phi_entities)
+        is_relevant = bool(relevance_result.get("is_relevant"))
+
+        if phi_detected or not is_relevant:
             try:
-                logger.info(f"PHI detected in file: {file_name}. Moving to rejected/.")
+                logger.info(
+                    "Document rejected for file: %s. phi_detected=%s is_relevant=%s. Moving to rejected/.",
+                    file_name,
+                    phi_detected,
+                    is_relevant,
+                )
                 move_object(s3_client, screening_bucket_name, pending_key, screening_bucket_name, rejected_key)
                 logger.info(f"File successfully moved to rejected/: {rejected_key}")
 
-                return _success_response(200, {
-                    "status": "rejected",
-                    "reason": "possible_phi_detected",
-                    "uploadId": upload_id,
-                    "quarantineKey": rejected_key,
-                    "phiGroups": phi_groups,
-                })
+                return _success_response(
+                    200,
+                    _build_rejected_response(
+                        upload_id=upload_id,
+                        rejected_key=rejected_key,
+                        phi_detected=phi_detected,
+                        relevance_result=relevance_result,
+                        phi_groups=phi_groups,
+                    ),
+                )
             except Exception as e:
-                logger.error(f"Failed to move PHI-flagged file to rejected/: {file_name}")
+                logger.error(f"Failed to move rejected file to rejected/: {file_name}")
                 logger.exception("Full traceback:")
                 return _error_response(500, "Failed to reject document")
-                
-                
-                
-                
-                
-                
-                
-        relevance_result = check_relevance_with_bedrock(extracted_text, bedrock)
-
-        if not relevance_result["is_relevant"]:
-            return _success_response(200, {
-                "status": "rejected",
-                "reason": "not_relevant",
-                "description": relevance_result["reason"],
-                "confidence": relevance_result.get("confidence"),
-                "uploadId": upload_id,
-                "quarantineKey": rejected_key
-            })
-                        
-                        
-                
-                
-                
-                
-                
-                
-                
-                
 
         # Accepted -> copy into KB bucket, then delete from screening bucket
         try:
@@ -530,11 +656,7 @@ def lambda_handler(event, context):
             )
             
             
-        return _success_response(200, {
-            "status": "accepted",
-            "message": "Document accepted and copied to KB bucket",
-            "kbKey": accepted_key,
-        })
+        return _success_response(200, _build_accepted_response(accepted_key))
         
     except Exception as exc:
         logger.exception("Unexpected error")
