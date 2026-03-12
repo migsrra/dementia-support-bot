@@ -397,19 +397,37 @@ def _build_rejection_reason(phi_detected: bool, is_relevant: bool) -> str:
     return "manual_review"
 
 
+def _get_rejected_subfolder(reason: str) -> str:
+    if reason == "possible_phi_detected":
+        return "phi_detected"
+    if reason == "not_relevant":
+        return "irrelevant"
+    if reason == "possible_phi_detected_and_not_relevant":
+        return "phi_detected_irrelevant"
+    if reason == "unable_to_extract_text":
+        return "unable_to_extract_text"
+    return "manual_review"
+
+
+def _build_rejected_key(upload_id: str, safe_name: str, reason: str) -> str:
+    subfolder = _get_rejected_subfolder(reason)
+    return f"rejected/{subfolder}/{upload_id}-{safe_name}"
+
+
 def _build_rejected_response(
     upload_id: str,
-    rejected_key: str,
     phi_detected: bool,
     relevance_result: dict,
     phi_groups: list[dict],
+    safe_name: str,
 ) -> dict:
     is_relevant = bool(relevance_result.get("is_relevant"))
+    rejection_reason = _build_rejection_reason(phi_detected, is_relevant)
     return {
         "status": "rejected",
-        "reason": _build_rejection_reason(phi_detected, is_relevant),
+        "reason": rejection_reason,
         "uploadId": upload_id,
-        "quarantineKey": rejected_key,
+        "quarantineKey": _build_rejected_key(upload_id, safe_name, rejection_reason),
         "phiGroups": phi_groups,
         "screeningSummary": _build_screening_summary(phi_detected, relevance_result),
     }
@@ -528,7 +546,6 @@ def lambda_handler(event, context):
         upload_id = str(uuid.uuid4())
         safe_name = sanitize_filename(file_name)
         pending_key = f"pending/{upload_id}-{safe_name}"
-        rejected_key = f"rejected/{upload_id}-{safe_name}"
         accepted_key = f"{safe_name}"
 
 
@@ -556,6 +573,8 @@ def lambda_handler(event, context):
             return _error_response(500, "Failed to extract text from PDF")
 
         if not extracted_text:
+            rejection_reason = "unable_to_extract_text"
+            rejected_key = _build_rejected_key(upload_id, safe_name, rejection_reason)
             try:
                 logger.info(f"No extractable text found for file: {file_name}. Moving to rejected/.")
                 move_object(s3_client, screening_bucket_name, pending_key, screening_bucket_name, rejected_key)
@@ -563,7 +582,7 @@ def lambda_handler(event, context):
 
                 return _success_response(200, {
                     "status": "rejected",
-                    "reason": "unable_to_extract_text",
+                    "reason": rejection_reason,
                     "uploadId": upload_id,
                     "quarantineKey": rejected_key,
                 })
@@ -592,6 +611,8 @@ def lambda_handler(event, context):
         is_relevant = bool(relevance_result.get("is_relevant"))
 
         if phi_detected or not is_relevant:
+            rejection_reason = _build_rejection_reason(phi_detected, is_relevant)
+            rejected_key = _build_rejected_key(upload_id, safe_name, rejection_reason)
             try:
                 logger.info(
                     "Document rejected for file: %s. phi_detected=%s is_relevant=%s. Moving to rejected/.",
@@ -606,10 +627,10 @@ def lambda_handler(event, context):
                     200,
                     _build_rejected_response(
                         upload_id=upload_id,
-                        rejected_key=rejected_key,
                         phi_detected=phi_detected,
                         relevance_result=relevance_result,
                         phi_groups=phi_groups,
+                        safe_name=safe_name,
                     ),
                 )
             except Exception as e:
