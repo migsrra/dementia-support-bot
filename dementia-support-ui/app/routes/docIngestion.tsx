@@ -51,6 +51,7 @@ const ACCEPTED_MIME_TYPES = new Set([
 ]);
 
 type SortDirection = "asc" | "desc";
+type DocumentSortField = "filename" | "size" | "lastModified";
 
 type UploadDecisionState = {
   fileName: string;
@@ -206,12 +207,37 @@ function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName:
   );
 }
 
+function getScreeningBadge(statusText: string) {
+  if (statusText.startsWith("Passed.")) {
+    return {
+      color: "teal" as const,
+      label: "Passed",
+      detail: statusText.replace("Passed. ", ""),
+    };
+  }
+
+  if (statusText.startsWith("Review required.")) {
+    return {
+      color: "red" as const,
+      label: "Review required",
+      detail: statusText.replace("Review required. ", ""),
+    };
+  }
+
+  return {
+    color: "gray" as const,
+    label: "Not completed",
+    detail: statusText.replace("Not completed. ", ""),
+  };
+}
+
 export default function DocIngestion() {
   const [activeTab, setActiveTab] = useState<DocIngestionTab>("document-ingestion");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
+  const [documentSortField, setDocumentSortField] = useState<DocumentSortField>("filename");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -321,10 +347,18 @@ export default function DocIngestion() {
       document.key.toLowerCase().includes(filterText.toLowerCase()),
     );
     return filtered.sort((a, b) => {
-      const result = a.key.localeCompare(b.key);
+      let result = 0;
+      if (documentSortField === "filename") {
+        result = a.key.localeCompare(b.key);
+      } else if (documentSortField === "size") {
+        result = (a.sizeBytes ?? -1) - (b.sizeBytes ?? -1);
+      } else {
+        result =
+          new Date(a.lastModified ?? 0).getTime() - new Date(b.lastModified ?? 0).getTime();
+      }
       return sortDirection === "asc" ? result : -result;
     });
-  }, [documents, filterText, sortDirection]);
+  }, [documentSortField, documents, filterText, sortDirection]);
 
   const filteredPhiGroups = useMemo(() => {
     return (uploadDecision?.response.phiGroups ?? []).map((group) => ({
@@ -333,6 +367,19 @@ export default function DocIngestion() {
       items: group.items,
     })) satisfies PhiGroup[];
   }, [uploadDecision]);
+
+  const acceptedPhiStatus = uploadSuccess?.screeningSummary
+    ? getScreeningBadge(getAcceptedPhiStatus(uploadSuccess.screeningSummary))
+    : null;
+  const acceptedRelevanceStatus = uploadSuccess?.screeningSummary
+    ? getScreeningBadge(getAcceptedRelevanceStatus(uploadSuccess.screeningSummary))
+    : null;
+  const rejectedPhiStatus = uploadDecision
+    ? getScreeningBadge(getRejectedPhiStatus(uploadDecision.response))
+    : null;
+  const rejectedRelevanceStatus = uploadDecision
+    ? getScreeningBadge(getRejectedRelevanceStatus(uploadDecision.response))
+    : null;
 
   const sortedUnsupportedQueries = useMemo(() => {
     const items = [...unsupportedQueries];
@@ -527,6 +574,21 @@ export default function DocIngestion() {
     }));
   }
 
+  function handleDocumentSort(field: DocumentSortField) {
+    if (documentSortField === field) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+
+    setDocumentSortField(field);
+    setSortDirection("asc");
+  }
+
+  function getDocumentSortIndicator(field: DocumentSortField) {
+    if (documentSortField !== field) return "";
+    return sortDirection === "asc" ? " ▲" : " ▼";
+  }
+
   return (
     <Box className="page">
       <Container size="xl" py={48}>
@@ -555,9 +617,6 @@ export default function DocIngestion() {
                   <Stack gap="md">
                     <Group justify="space-between">
                       <Text fw={600}>Upload Document</Text>
-                      <Badge variant="light" color="teal">
-                        Mock S3
-                      </Badge>
                     </Group>
                     <Paper
                       className="upload-dropzone"
@@ -642,14 +701,40 @@ export default function DocIngestion() {
                           <Text size="sm">{uploadSuccess.message}</Text>
                           {uploadSuccess.screeningSummary ? (
                             <>
-                              <Text size="sm">
-                                <strong>PHI screening:</strong>{" "}
-                                {getAcceptedPhiStatus(uploadSuccess.screeningSummary)}
-                              </Text>
-                              <Text size="sm">
-                                <strong>Relevance assessment:</strong>{" "}
-                                {getAcceptedRelevanceStatus(uploadSuccess.screeningSummary)}
-                              </Text>
+                              <Stack gap={2}>
+                                <Group gap="xs" align="center">
+                                  <Text size="sm" fw={600}>
+                                    PHI screening
+                                  </Text>
+                                  {acceptedPhiStatus ? (
+                                    <Badge color={acceptedPhiStatus.color} variant="light">
+                                      {acceptedPhiStatus.label}
+                                    </Badge>
+                                  ) : null}
+                                </Group>
+                                {acceptedPhiStatus ? (
+                                  <Text size="sm" c="dimmed">
+                                    {acceptedPhiStatus.detail}
+                                  </Text>
+                                ) : null}
+                              </Stack>
+                              <Stack gap={2}>
+                                <Group gap="xs" align="center">
+                                  <Text size="sm" fw={600}>
+                                    Relevance assessment
+                                  </Text>
+                                  {acceptedRelevanceStatus ? (
+                                    <Badge color={acceptedRelevanceStatus.color} variant="light">
+                                      {acceptedRelevanceStatus.label}
+                                    </Badge>
+                                  ) : null}
+                                </Group>
+                                {acceptedRelevanceStatus ? (
+                                  <Text size="sm" c="dimmed">
+                                    {acceptedRelevanceStatus.detail}
+                                  </Text>
+                                ) : null}
+                              </Stack>
                             </>
                           ) : null}
                         </Stack>
@@ -659,14 +744,40 @@ export default function DocIngestion() {
                       <Alert color="yellow" variant="light" title="Document review required">
                         <Stack gap="sm">
                           <Stack gap={4}>
-                            <Text size="sm">
-                              <strong>PHI screening:</strong>{" "}
-                              {getRejectedPhiStatus(uploadDecision.response)}
-                            </Text>
-                            <Text size="sm">
-                              <strong>Relevance assessment:</strong>{" "}
-                              {getRejectedRelevanceStatus(uploadDecision.response)}
-                            </Text>
+                            <Stack gap={2}>
+                              <Group gap="xs" align="center">
+                                <Text size="sm" fw={600}>
+                                  PHI screening
+                                </Text>
+                                {rejectedPhiStatus ? (
+                                  <Badge color={rejectedPhiStatus.color} variant="light">
+                                    {rejectedPhiStatus.label}
+                                  </Badge>
+                                ) : null}
+                              </Group>
+                              {rejectedPhiStatus ? (
+                                <Text size="sm" c="dimmed">
+                                  {rejectedPhiStatus.detail}
+                                </Text>
+                              ) : null}
+                            </Stack>
+                            <Stack gap={2}>
+                              <Group gap="xs" align="center">
+                                <Text size="sm" fw={600}>
+                                  Relevance assessment
+                                </Text>
+                                {rejectedRelevanceStatus ? (
+                                  <Badge color={rejectedRelevanceStatus.color} variant="light">
+                                    {rejectedRelevanceStatus.label}
+                                  </Badge>
+                                ) : null}
+                              </Group>
+                              {rejectedRelevanceStatus ? (
+                                <Text size="sm" c="dimmed">
+                                  {rejectedRelevanceStatus.detail}
+                                </Text>
+                              ) : null}
+                            </Stack>
                           </Stack>
                           <Text size="sm">
                             {formatRejectedUploadSummary(
@@ -805,19 +916,9 @@ export default function DocIngestion() {
                   <Stack gap="md">
                     <Group justify="space-between" align="center">
                       <Text fw={600}>S3 Documents</Text>
-                      <Group gap="xs">
-                        <Button variant="default" onClick={() => void loadDocuments()} loading={isLoading}>
-                          Refresh
-                        </Button>
-                        <Button
-                          variant="light"
-                          onClick={() =>
-                            setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
-                          }
-                        >
-                          Sort filename {sortDirection === "asc" ? "A-Z" : "Z-A"}
-                        </Button>
-                      </Group>
+                      <Button variant="default" onClick={() => void loadDocuments()} loading={isLoading}>
+                        Refresh
+                      </Button>
                     </Group>
 
                     <TextInput
@@ -873,9 +974,54 @@ export default function DocIngestion() {
                       <Table striped highlightOnHover withTableBorder>
                         <Table.Thead>
                           <Table.Tr>
-                            <Table.Th>Filename</Table.Th>
-                            <Table.Th>Size</Table.Th>
-                            <Table.Th>Last Modified</Table.Th>
+                            <Table.Th>
+                              <UnstyledButton
+                                onClick={() => handleDocumentSort("filename")}
+                                style={{
+                                  color: "inherit",
+                                  font: "inherit",
+                                  fontWeight: "inherit",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Filename{getDocumentSortIndicator("filename")}
+                              </UnstyledButton>
+                            </Table.Th>
+                            <Table.Th>
+                              <UnstyledButton
+                                onClick={() => handleDocumentSort("size")}
+                                style={{
+                                  color: "inherit",
+                                  font: "inherit",
+                                  fontWeight: "inherit",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Size{getDocumentSortIndicator("size")}
+                              </UnstyledButton>
+                            </Table.Th>
+                            <Table.Th>
+                              <UnstyledButton
+                                onClick={() => handleDocumentSort("lastModified")}
+                                style={{
+                                  color: "inherit",
+                                  font: "inherit",
+                                  fontWeight: "inherit",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Last Modified{getDocumentSortIndicator("lastModified")}
+                              </UnstyledButton>
+                            </Table.Th>
                             <Table.Th>Action</Table.Th>
                           </Table.Tr>
                         </Table.Thead>
