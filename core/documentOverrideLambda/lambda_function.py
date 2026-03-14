@@ -37,6 +37,28 @@ def move_object(s3_client, src_bucket: str, src_key: str, dst_bucket: str, dst_k
     s3_client.delete_object(Bucket=src_bucket, Key=src_key)
 
 
+def put_source_metadata_file(
+    s3_client,
+    bucket_name: str,
+    document_key: str,
+    source_url: str,
+) -> str:
+    metadata_key = f"{document_key}.metadata.json"
+    metadata_payload = {
+        "metadataAttributes": {
+            "source_url": source_url,
+        }
+    }
+
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=metadata_key,
+        Body=json.dumps(metadata_payload).encode("utf-8"),
+        ContentType="application/json",
+    )
+    return metadata_key
+
+
 def extract_final_filename(quarantine_key: str, upload_id: str) -> str:
     logger.info(
         "Extracting final filename from quarantine_key=%s upload_id=%s",
@@ -114,6 +136,7 @@ def lambda_handler(event, context):
 
         upload_id = payload.get("uploadId")
         quarantine_key = payload.get("quarantineKey")
+        source_url = payload.get("sourceUrl") or None
 
         logger.info(
             "Received override request: upload_id=%s quarantine_key=%s",
@@ -201,16 +224,23 @@ def lambda_handler(event, context):
             S3_KB_BUCKET_NAME,
             kb_key,
         )
+
         s3.copy_object(
             Bucket=S3_KB_BUCKET_NAME,
-            CopySource={
-                "Bucket": S3_SCREENING_BUCKET_NAME,
-                "Key": override_key,
-            },
+            CopySource={"Bucket": S3_SCREENING_BUCKET_NAME, "Key": override_key},
             Key=kb_key,
             MetadataDirective="COPY",
-            ContentType="application/pdf",
         )
+
+        if source_url:
+            metadata_key = put_source_metadata_file(
+                s3_client=s3,
+                bucket_name=S3_KB_BUCKET_NAME,
+                document_key=kb_key,
+                source_url=source_url,
+            )
+            logger.info("Source metadata sidecar uploaded: %s", metadata_key)
+
         logger.info("Copy successful")
 
         # logger.info(

@@ -240,6 +240,7 @@ export default function DocIngestion() {
   const [documentSortField, setDocumentSortField] = useState<DocumentSortField>("filename");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<UploadSuccessState>(null);
   const [uploadDecision, setUploadDecision] = useState<UploadDecisionState>(null);
@@ -343,8 +344,10 @@ export default function DocIngestion() {
   }, [uploadDecision]);
 
   const filteredAndSortedDocuments = useMemo(() => {
-    const filtered = documents.filter((document) =>
-      document.key.toLowerCase().includes(filterText.toLowerCase()),
+    const filtered = documents.filter(
+      (document) =>
+        !document.key.endsWith(".metadata.json") &&
+        document.key.toLowerCase().includes(filterText.toLowerCase()),
     );
     return filtered.sort((a, b) => {
       let result = 0;
@@ -422,6 +425,8 @@ export default function DocIngestion() {
   async function handleUpload() {
     if (!selectedFile || isUploading) return;
 
+    const normalizedSourceUrl = sourceUrl.trim() || undefined;
+
     const previousDocuments = documents;
     const optimisticItem: DocumentItem = {
       key: selectedFile.name,
@@ -440,7 +445,7 @@ export default function DocIngestion() {
     ]);
 
     try {
-      const response = await uploadDocument(selectedFile);
+      const response = await uploadDocument(selectedFile, { sourceUrl: normalizedSourceUrl });
       setUploadProgress(100);
 
       if (response.status === "accepted") {
@@ -451,6 +456,7 @@ export default function DocIngestion() {
           screeningSummary: response.screeningSummary,
         });
         setSelectedFile(null);
+        setSourceUrl("");
         if (fileInputRef.current) fileInputRef.current.value = "";
       } else {
         setDocuments(previousDocuments);
@@ -485,6 +491,7 @@ export default function DocIngestion() {
       await cancelDocumentUpload(uploadDecision.response.quarantineKey);
       setUploadDecision(null);
       setSelectedFile(null);
+      setSourceUrl("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       setUploadSuccess({
         title: "Upload cancelled",
@@ -510,12 +517,15 @@ export default function DocIngestion() {
     setIsResolvingRejectedUpload(true);
     setUploadError(null);
     try {
+      const normalizedSourceUrl = sourceUrl.trim() || undefined;
       await uploadDocumentAnyway(
         uploadDecision.response.uploadId,
         uploadDecision.response.quarantineKey,
+        { sourceUrl: normalizedSourceUrl },
       );
       setUploadDecision(null);
       setSelectedFile(null);
+      setSourceUrl("");
       if (fileInputRef.current) fileInputRef.current.value = "";
       await loadDocuments();
       setUploadSuccess({
@@ -654,21 +664,30 @@ export default function DocIngestion() {
 
                     {selectedFile ? (
                       <Paper withBorder radius="md" p="sm">
-                        <Group justify="space-between" align="center">
-                          <div>
-                            <Text fw={600}>{selectedFile.name}</Text>
-                            <Text size="sm" c="dimmed">
-                              {formatSize(selectedFile.size)}
-                            </Text>
-                          </div>
-                          <Button
-                            onClick={handleUpload}
-                            loading={isUploading}
+                        <Stack gap="sm">
+                          <Group justify="space-between" align="center">
+                            <div>
+                              <Text fw={600}>{selectedFile.name}</Text>
+                              <Text size="sm" c="dimmed">
+                                {formatSize(selectedFile.size)}
+                              </Text>
+                            </div>
+                            <Button
+                              onClick={handleUpload}
+                              loading={isUploading}
+                              disabled={isUploading || Boolean(uploadDecision)}
+                            >
+                              Upload
+                            </Button>
+                          </Group>
+                          <TextInput
+                            label="Source URL (optional)"
+                            placeholder="https://example.com/original-document.pdf"
+                            value={sourceUrl}
+                            onChange={(event) => setSourceUrl(event.currentTarget.value)}
                             disabled={isUploading || Boolean(uploadDecision)}
-                          >
-                            Upload
-                          </Button>
-                        </Group>
+                          />
+                        </Stack>
                       </Paper>
                     ) : null}
 
