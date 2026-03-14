@@ -120,7 +120,7 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "10")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "11")
 
         # add tag around query to aid guardrail processing
         suffix = str(uuid.uuid4())[:8]
@@ -172,6 +172,7 @@ def lambda_handler(event, context):
             topic_policy = assessment.get("topicPolicy", {})
             topics = topic_policy.get("topics", [])
             flagged_topics = [item['name'] for item in topics]
+            print("topics:", flagged_topics)
 
             high_priority_topic = harm_priority_topic(flagged_topics)   # harm topics prioritized
             if high_priority_topic:
@@ -181,8 +182,12 @@ def lambda_handler(event, context):
                 completion = MAID_EUTHANESIA_TEMPLATE
                 bypass_agent = True
             elif flagged_topics:
-                routing_mode = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
-                print("non-harm:", routing_mode)
+                priority_topic = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
+                if "Dementia_Related" in flagged_topics and priority_topic == "Non_Dementia_Related_Queries":
+                    routing_mode = "Allowed"
+                else:
+                    routing_mode = priority_topic
+                # print("non-harm:", routing_mode)
         
             # Sensitive info check
             sensitiveInformationPolicy = assessment.get("sensitiveInformationPolicy", {})
@@ -275,7 +280,7 @@ def lambda_handler(event, context):
                 clean_context = "\n".join(unique_lines)
 
                 # print("DEBUG RESPONSE", completion)
-                print("DEBUG CONTEXT", clean_context)
+                # print("DEBUG CONTEXT", clean_context)
 
                 if clean_context and routing_mode in output_checked_topics:         # only check grounding and relevance if allowed or low risk topic
                     try:

@@ -36,11 +36,10 @@ def compute_metrics(cm):
 
     precision = TP / (TP + FP) if (TP + FP) > 0 else 0
     recall = TP / (TP + FN) if (TP + FN) > 0 else 0
-    accuracy = (TP + TN) / (TP + TN + FP + FN)
     F1 = (2*recall*precision)/(precision+recall) if (precision+recall) > 0 else 0
     FNR = FN / (FN + TP) if (FN + TP) > 0 else 0
 
-    return accuracy, precision, recall, F1, FNR
+    return precision, recall, F1, FNR
 
 # ---------------- LOAD PROMPTS ---------------- #
 
@@ -142,7 +141,7 @@ for true_category, predicted_category in results:
 
 for category in CATEGORIES:
 
-    accuracy, precision, recall, F1, FNR = compute_metrics(confusion_matrix[category])
+    precision, recall, F1, FNR = compute_metrics(confusion_matrix[category])
 
     logger.info(f"\nCategory: {category}")
     logger.info(f"Confusion Matrix: {confusion_matrix[category]}")
@@ -150,6 +149,5 @@ for category in CATEGORIES:
     logger.info(f"Precision: {round(precision,3)}")
     logger.info(f"Recall: {round(recall,3)}")
     logger.info(f"F1: {round(F1,3)}")
-    logger.info(f"Accuracy: {round(accuracy,3)}")
 
 print(f"Evaluation complete. Results saved to {LOG_FILE}")
