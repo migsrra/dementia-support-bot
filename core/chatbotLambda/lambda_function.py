@@ -3,6 +3,7 @@ import boto3
 import logging
 import os
 import uuid
+import re
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -28,6 +29,53 @@ PROMPT_ATTACK_TEMPLATE = """
     Is there a specific caregiving topic you’d like guidance on?
     """
 
+harm_priority_order = [
+    "Self_Harm_High",
+    "Patient_Aggression_High",
+    "Caregiver_Burnout_High",
+    "Self_Harm_Low",
+    "Patient_Aggression_Low",
+    "Caregiver_Burnout_Low"
+]
+
+non_harm_priority_order = [
+    "Medication_Dosing_Changes",
+    "Medical_Diagnosis_Interpretation",
+    "Legal_High_Stakes_Financial_Execution",
+    "Non_Dementia_Related_Queries"
+]
+
+output_checked_topics = [
+    "Allowed",
+    "Self_Harm_Low",
+    "Patient_Aggression_Low",
+    "Caregiver_Burnout_Low"
+]
+
+def extract_masked_text(guardrail_output):
+    # Regex to find anything inside the custom Bedrock tags
+    pattern = r"<amazon-bedrock-guardrails-guardContent_[^>]+>(.*?)</amazon-bedrock-guardrails-guardContent_[^>]+>"
+    
+    match = re.search(pattern, guardrail_output, re.DOTALL)
+    if match:
+        # Return the clean text inside the tags, stripped of extra whitespace
+        return match.group(1).strip()
+    
+    # Fallback: if no tags found, return the original (or use a cleaner strip)
+    return guardrail_output.strip()
+
+def harm_priority_topic(detected_topics):
+    for topic in harm_priority_order:        # return highest priority topic if they exist
+        if topic in detected_topics:
+            return topic
+    return None
+
+def non_harm_priority_topic(detected_topics):
+    for topic in non_harm_priority_order:       # return highest priority non-harm topic
+        if topic in detected_topics:
+            return topic
+    return None
+
 def _build_session():
     logger.info("Building boto3 session")
     if AWS_PROFILE:
@@ -51,6 +99,8 @@ def _error_response(status_code, message):
         "body": json.dumps({"error": message}),
     }
 
+
+
 def lambda_handler(event, context):
     try:
         session = _build_session()
@@ -70,7 +120,7 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "7")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "10")
 
         # add tag around query to aid guardrail processing
         suffix = str(uuid.uuid4())[:8]
@@ -95,40 +145,19 @@ def lambda_handler(event, context):
       
         logger.info(json.dumps(guardrail_response, indent=2))
 
-        risk_score = 0
-        non_risk_categories = []
-        message = ""
-        response = ""
+        message = "Allowed"
+        completion = ""
+        routing_mode = "Allowed"
         bypass_agent = False
+        grounding_score = None
+        grounding_action = None
+        relevance_score = None
+        relevance_action = None
 
         assessments = guardrail_response.get("assessments", [])
 
         for assessment in assessments:
-            # denied topics
-            topic_policy = assessment.get("topicPolicy", {})
-            topics = topic_policy.get("topics", [])
-
-            for topic in topics:        
-                name = topic.get("name")
-                # compute risk of the query
-                if name == "T1_Emotional_Distress":                        # tier 1 risk
-                    risk_score += 1
-                elif name == "T2_Ambiguous_Crisis_Self_Harm_Language":     # tier 2 risk
-                    risk_score += 3
-                elif name == "T3_Explicit_Self_Harm_Intent":               # tier 3 risk
-                    risk_score += 5
-                elif name == "Self_Harm_Instructions":                  # tier 3 risk
-                    risk_score += 5
-                elif name == "Harming_Others":                  # tier 3 risk
-                    risk_score += 5
-                elif name == "MAID_euthanesia":     # hard refusal, bypass agent
-                    message = "MAID_euthanesia boundary"
-                    response = MAID_EUTHANESIA_TEMPLATE
-                    bypass_agent = True
-                else:
-                    non_risk_categories.append(name)   
-
-            # content filters
+            # content filters, check for prompt attack first
             content_policy = assessment.get("contentPolicy", {})
             filters = content_policy.get("filters", [])
 
@@ -136,40 +165,42 @@ def lambda_handler(event, context):
                 type = filter.get("type")
                 if type == "PROMPT_ATTACK":     # hard refusal, bypass agent
                     message = "Prompt Attack"
-                    response = PROMPT_ATTACK_TEMPLATE
+                    completion = PROMPT_ATTACK_TEMPLATE
                     bypass_agent = True
-
-        # logger.info(f"Risk score: {risk_score}")
-        # logger.info(f"non_risk_categories: {non_risk_categories}")
-        
-        # Response Strategy based on risk and blocks, only if not hard refusal
-        routing_mode = "Allowed"
-
-        if bypass_agent is False:
-            # crisis routing
-            if risk_score >= 10:
-                routing_mode = "T3_Explicit_Self_Harm_Intent"
-            elif risk_score >= 5:
-                routing_mode = "T2_Ambiguous_Crisis_Self_Harm_Language"
-            elif risk_score > 0:
-                routing_mode = "T1_Emotional_Distress"
-
-            # non-risk routing
-            if non_risk_categories and risk_score == 0:
-                routing_mode = non_risk_categories[0]      # only respond to the first non-risk category flagged in the query
-
-            if routing_mode != "Allowed":        # set routing mode parameter if crisis flagged
-                session_state = {
-                    "sessionAttributes": {
-                        "routing_mode": routing_mode
-                    }
-                }
-            else:           # reset parameter if no crisis flag (so state doesn't persist from the past)
-                session_state = {
-                    "sessionAttributes": {}
-                }
             
-            # logger.info(f"routing: {routing_mode}")
+            # denied topics
+            topic_policy = assessment.get("topicPolicy", {})
+            topics = topic_policy.get("topics", [])
+            flagged_topics = [item['name'] for item in topics]
+
+            high_priority_topic = harm_priority_topic(flagged_topics)   # harm topics prioritized
+            if high_priority_topic:
+                routing_mode = high_priority_topic
+            elif "MAID_Euthanesia" in flagged_topics:
+                message = "MAID_Euthanesia"
+                completion = MAID_EUTHANESIA_TEMPLATE
+                bypass_agent = True
+            elif flagged_topics:
+                routing_mode = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
+                print("non-harm:", routing_mode)
+        
+            # Sensitive info check
+            sensitiveInformationPolicy = assessment.get("sensitiveInformationPolicy", {})
+            piiEntities = sensitiveInformationPolicy.get("piiEntities", [])
+
+            if piiEntities:     # extract masked query and replace original string in query
+                raw_text = guardrail_response["outputs"][0]["text"]
+                safe_text = extract_masked_text(raw_text)
+                body_str = safe_text
+            
+        # Setting Routing
+        session_state = {
+            "sessionAttributes": {
+                "routing_mode": routing_mode
+            }
+        }
+
+        attribution = None
 
         # Start Bedrock KB ingestion job
         if not BEDROCK_AGENT_ID or not BEDROCK_ALIAS_ID:
@@ -198,7 +229,6 @@ def lambda_handler(event, context):
                 
                 completion = ""
                 retrieved_context = ""
-                attribution = None
                 attribution_citations = []
                 eventLen = 0
                 for event in response.get("completion"):
@@ -221,16 +251,17 @@ def lambda_handler(event, context):
                             if isinstance(citations, list) and len(citations) > 0:
                                 attribution_citations.extend(citations)
                                 
-                                for cit in citations:
-                                    refs = cit.get("retrievedReferences", [])
-                                    # print(f"DEBUG: Found {len(refs)} references in this citation")
-                                    
-                                    for ref in refs:
-                                        content = ref.get("content", {})
-                                        text = content.get("text", "")
-                                        if text:
-                                            retrieved_context += f"\n{text}"
-                                            # print(f"DEBUG: Added {len(text)} chars to context")
+                                if routing_mode in output_checked_topics:       # only get references if allowed topic to perform grounding and relevance
+                                    for cit in citations:
+                                        refs = cit.get("retrievedReferences", [])
+                                        # print(f"DEBUG: Found {len(refs)} references in this citation")
+                                        
+                                        for ref in refs:
+                                            content = ref.get("content", {})
+                                            text = content.get("text", "")
+                                            if text:
+                                                retrieved_context += f"\n{text}"
+                                                # print(f"DEBUG: Added {len(text)} chars to context")
                                         
                         print(f"chunk: {chunk}")
                     
@@ -244,14 +275,9 @@ def lambda_handler(event, context):
                 clean_context = "\n".join(unique_lines)
 
                 # print("DEBUG RESPONSE", completion)
-                # print("DEBUG CONTEXT", clean_context)
+                print("DEBUG CONTEXT", clean_context)
 
-                grounding_score = None
-                grounding_action = None
-                relevance_score = None
-                relevance_action = None
-
-                if clean_context and routing_mode == "Allowed":         # only check grounding and relevance if allowed topic
+                if clean_context and routing_mode in output_checked_topics:         # only check grounding and relevance if allowed or low risk topic
                     try:
                         guardrail_check = bedrock_runtime.apply_guardrail(
                             guardrailIdentifier=GUARDRAIL_ID,
@@ -303,9 +329,11 @@ def lambda_handler(event, context):
 
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
-
+                elif not clean_context:
+                    print("No references returned, grounding failed. Should forward to physician")
+                    
                 # save output values
-                response = completion
+                # response = completion
                 message = routing_mode
 
                 print(f"Amount of events: {eventLen}")
@@ -324,8 +352,7 @@ def lambda_handler(event, context):
         # response for testing, includes guardrail info for analysis
         response_body = {
             "message": message,
-            "response": response,
-            "risk_score": risk_score,
+            "response": completion,
             # "routing_mode": routing_mode,
             # "non_risk_categories": non_risk_categories
             "grounding_score": grounding_score,

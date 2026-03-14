@@ -1,17 +1,17 @@
 import boto3
 import json
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------- CONFIG ---------------- #
 
 LAMBDA_NAME = "invokeAgentLambda"
-DUMMY_SESSION_ID = "12345"
 REGION = "us-east-1"
 
 MAX_WORKERS = 10   # safe concurrency for Lambda testing
 
-LOG_FILE = "evaluation_log3.txt"
+LOG_FILE = "log2.txt"
 
 # ---------------- LOGGING SETUP ---------------- #
 logging.basicConfig(
@@ -37,9 +37,10 @@ def compute_metrics(cm):
     precision = TP / (TP + FP) if (TP + FP) > 0 else 0
     recall = TP / (TP + FN) if (TP + FN) > 0 else 0
     accuracy = (TP + TN) / (TP + TN + FP + FN)
+    F1 = (2*recall*precision)/(precision+recall) if (precision+recall) > 0 else 0
     FNR = FN / (FN + TP) if (FN + TP) > 0 else 0
 
-    return precision, recall, accuracy, FNR
+    return accuracy, precision, recall, F1, FNR
 
 # ---------------- LOAD PROMPTS ---------------- #
 
@@ -67,8 +68,10 @@ def test_prompt(test, index):
     prompt = test["prompt"]
     true_category = test["category"]
 
+    unique_session_id = str(uuid.uuid4())
+
     payload = {
-        "pathParameters": {"sessionID": DUMMY_SESSION_ID},
+        "pathParameters": {"sessionID": unique_session_id},
         "body": json.dumps({"inputText": prompt})
     }
 
@@ -87,10 +90,9 @@ def test_prompt(test, index):
             body = result
 
         predicted_category = body.get("message")
-        risk_score = body.get("risk_score")
 
         logger.info(
-            f"Prompt {index} | True: {true_category} | Predicted: {predicted_category} | Risk Score: {risk_score} | Prompt: {prompt}"
+            f"Prompt {index} | True: {true_category} | Predicted: {predicted_category} | Prompt: {prompt}"
         )
 
         return true_category, predicted_category
@@ -140,13 +142,14 @@ for true_category, predicted_category in results:
 
 for category in CATEGORIES:
 
-    precision, recall, accuracy, FNR = compute_metrics(confusion_matrix[category])
+    accuracy, precision, recall, F1, FNR = compute_metrics(confusion_matrix[category])
 
     logger.info(f"\nCategory: {category}")
     logger.info(f"Confusion Matrix: {confusion_matrix[category]}")
     logger.info(f"False Negative Rate: {round(FNR,3)}")
     logger.info(f"Precision: {round(precision,3)}")
     logger.info(f"Recall: {round(recall,3)}")
+    logger.info(f"F1: {round(F1,3)}")
     logger.info(f"Accuracy: {round(accuracy,3)}")
 
 print(f"Evaluation complete. Results saved to {LOG_FILE}")
