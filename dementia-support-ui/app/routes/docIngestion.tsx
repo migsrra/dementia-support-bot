@@ -7,10 +7,12 @@ import {
   Container,
   Group,
   Modal,
+  UnstyledButton,
   Paper,
   Progress,
   Stack,
   Table,
+  Tabs,
   Text,
   TextInput,
   Title,
@@ -28,11 +30,17 @@ import {
   type UploadRejectedResponse,
   uploadDocument,
 } from "~/api/documentsClient";
+import {
+  deleteUnsupportedQuery,
+  listUnsupportedQueries,
+  type UnsupportedQuery,
+} from "~/api/unsupportedQueriesClient";
 
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = [".pdf", ".txt", ".doc", ".docx", ".md"];
 const SUCCESS_ALERT_TTL_MS = 10000;
 const INITIAL_PHI_GROUP_EXAMPLE_COUNT = 5;
+const UNSUPPORTED_QUERY_PREVIEW_LENGTH = 160;
 const ACCEPTED_MIME_TYPES = new Set([
   "application/pdf",
   "text/plain",
@@ -60,6 +68,9 @@ type PhiGroup = {
   label: string;
   items: UploadPhiGroup["items"];
 };
+
+type DocIngestionTab = "document-ingestion" | "unsupported-queries";
+type UnsupportedQuerySortDirection = "latest" | "oldest";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -196,6 +207,7 @@ function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName:
 }
 
 export default function DocIngestion() {
+  const [activeTab, setActiveTab] = useState<DocIngestionTab>("document-ingestion");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -214,6 +226,14 @@ export default function DocIngestion() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
+  const [unsupportedQueries, setUnsupportedQueries] = useState<UnsupportedQuery[]>([]);
+  const [isUnsupportedQueriesLoading, setIsUnsupportedQueriesLoading] = useState(true);
+  const [unsupportedQueriesError, setUnsupportedQueriesError] = useState<string | null>(null);
+  const [unsupportedDeleteError, setUnsupportedDeleteError] = useState<string | null>(null);
+  const [pendingUnsupportedDeleteId, setPendingUnsupportedDeleteId] = useState<string | null>(null);
+  const [expandedUnsupportedQueryIds, setExpandedUnsupportedQueryIds] = useState<Record<string, boolean>>({});
+  const [unsupportedQuerySortDirection, setUnsupportedQuerySortDirection] =
+    useState<UnsupportedQuerySortDirection>("latest");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadDocuments = useCallback(async () => {
@@ -233,6 +253,25 @@ export default function DocIngestion() {
   useEffect(() => {
     void loadDocuments();
   }, [loadDocuments]);
+
+  const loadUnsupportedQueries = useCallback(async () => {
+    setIsUnsupportedQueriesLoading(true);
+    setUnsupportedQueriesError(null);
+    try {
+      const items = await listUnsupportedQueries();
+      setUnsupportedQueries(items);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to load unsupported queries.";
+      setUnsupportedQueriesError(message);
+    } finally {
+      setIsUnsupportedQueriesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadUnsupportedQueries();
+  }, [loadUnsupportedQueries]);
 
   useEffect(() => {
     if (!isUploading) {
@@ -294,6 +333,17 @@ export default function DocIngestion() {
       items: group.items,
     })) satisfies PhiGroup[];
   }, [uploadDecision]);
+
+  const sortedUnsupportedQueries = useMemo(() => {
+    const items = [...unsupportedQueries];
+    items.sort((a, b) => {
+      const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      const diff = bTime - aTime;
+      return unsupportedQuerySortDirection === "latest" ? diff : -diff;
+    });
+    return items;
+  }, [unsupportedQueries, unsupportedQuerySortDirection]);
 
   function handlePickedFile(file: File | null) {
     setUploadError(null);
@@ -453,6 +503,30 @@ export default function DocIngestion() {
     }
   }
 
+  async function handleUnsupportedDelete(query: UnsupportedQuery) {
+    if (pendingUnsupportedDeleteId) return;
+
+    setPendingUnsupportedDeleteId(query.id);
+    setUnsupportedDeleteError(null);
+    try {
+      await deleteUnsupportedQuery(query.id, { timestamp: query.timestamp });
+      setUnsupportedQueries((current) => current.filter((item) => item.id !== query.id));
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to delete unsupported query.";
+      setUnsupportedDeleteError(message);
+    } finally {
+      setPendingUnsupportedDeleteId(null);
+    }
+  }
+
+  function toggleUnsupportedQueryExpanded(queryId: string) {
+    setExpandedUnsupportedQueryIds((current) => ({
+      ...current,
+      [queryId]: !current[queryId],
+    }));
+  }
+
   return (
     <Box className="page">
       <Container size="xl" py={48}>
@@ -469,337 +543,512 @@ export default function DocIngestion() {
             </Button>
           </Group>
 
-          <Paper className="chat-card" p="lg" radius="lg" shadow="md">
-            <Stack gap="md">
-              <Group justify="space-between">
-                <Text fw={600}>Upload Document</Text>
-                <Badge variant="light" color="teal">
-                  Mock S3
-                </Badge>
-              </Group>
-              <Paper
-                className="upload-dropzone"
-                radius="md"
-                p="lg"
-                onDrop={handleDrop}
-                onDragOver={handleDragOver}
-                style={{
-                  opacity: uploadDecision ? 0.6 : 1,
-                  pointerEvents: uploadDecision ? "none" : undefined,
-                }}
-              >
-                <Stack gap="sm" align="center">
-                  <Text fw={600}>Drag and drop a file here</Text>
-                  <Text size="sm" c="dimmed">
-                    Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 25 MB)
-                  </Text>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept={ACCEPTED_EXTENSIONS.join(",")}
-                    className="hidden-file-input"
-                    onChange={(event) => handlePickedFile(event.currentTarget.files?.[0] ?? null)}
-                    disabled={isUploading || Boolean(uploadDecision)}
-                  />
-                  <Button
-                    variant="default"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={isUploading || Boolean(uploadDecision)}
-                  >
-                    Choose File
-                  </Button>
-                </Stack>
-              </Paper>
+          <Tabs value={activeTab} onChange={(value) => setActiveTab((value as DocIngestionTab) ?? "document-ingestion")}>
+            <Tabs.List>
+              <Tabs.Tab value="document-ingestion">Document Ingestion</Tabs.Tab>
+              <Tabs.Tab value="unsupported-queries">Unsupported Queries</Tabs.Tab>
+            </Tabs.List>
 
-              {selectedFile ? (
-                <Paper withBorder radius="md" p="sm">
-                  <Group justify="space-between" align="center">
-                    <div>
-                      <Text fw={600}>{selectedFile.name}</Text>
-                      <Text size="sm" c="dimmed">
-                        {formatSize(selectedFile.size)}
-                      </Text>
-                    </div>
-                    <Button
-                      onClick={handleUpload}
-                      loading={isUploading}
-                      disabled={isUploading || Boolean(uploadDecision)}
+            <Tabs.Panel value="document-ingestion" pt="lg">
+              <Stack gap="xl">
+                <Paper className="chat-card" p="lg" radius="lg" shadow="md">
+                  <Stack gap="md">
+                    <Group justify="space-between">
+                      <Text fw={600}>Upload Document</Text>
+                      <Badge variant="light" color="teal">
+                        Mock S3
+                      </Badge>
+                    </Group>
+                    <Paper
+                      className="upload-dropzone"
+                      radius="md"
+                      p="lg"
+                      onDrop={handleDrop}
+                      onDragOver={handleDragOver}
+                      style={{
+                        opacity: uploadDecision ? 0.6 : 1,
+                        pointerEvents: uploadDecision ? "none" : undefined,
+                      }}
                     >
-                      Upload
-                    </Button>
-                  </Group>
-                </Paper>
-              ) : null}
-
-              {isUploading ? <Progress value={uploadProgress} animated size="lg" radius="xl" /> : null}
-
-              {uploadError ? (
-                <Alert
-                  color="red"
-                  variant="light"
-                  title="Upload error"
-                  withCloseButton
-                  closeButtonLabel="Dismiss upload error"
-                  onClose={() => setUploadError(null)}
-                >
-                  {uploadError}
-                </Alert>
-              ) : null}
-              {uploadSuccess ? (
-                <Alert
-                  color="teal"
-                  variant="light"
-                  title={uploadSuccess.title}
-                  withCloseButton
-                  closeButtonLabel="Dismiss upload success"
-                  onClose={() => setUploadSuccess(null)}
-                >
-                  <Stack gap={4}>
-                    <Text size="sm">{uploadSuccess.message}</Text>
-                    {uploadSuccess.screeningSummary ? (
-                      <>
-                        <Text size="sm">
-                          <strong>PHI screening:</strong>{" "}
-                          {getAcceptedPhiStatus(uploadSuccess.screeningSummary)}
+                      <Stack gap="sm" align="center">
+                        <Text fw={600}>Drag and drop a file here</Text>
+                        <Text size="sm" c="dimmed">
+                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 25 MB)
                         </Text>
-                        <Text size="sm">
-                          <strong>Relevance assessment:</strong>{" "}
-                          {getAcceptedRelevanceStatus(uploadSuccess.screeningSummary)}
-                        </Text>
-                      </>
-                    ) : null}
-                  </Stack>
-                </Alert>
-              ) : null}
-              {uploadDecision ? (
-                <Alert color="yellow" variant="light" title="Document review required">
-                  <Stack gap="sm">
-                    <Stack gap={4}>
-                      <Text size="sm">
-                        <strong>PHI screening:</strong>{" "}
-                        {getRejectedPhiStatus(uploadDecision.response)}
-                      </Text>
-                      <Text size="sm">
-                        <strong>Relevance assessment:</strong>{" "}
-                        {getRejectedRelevanceStatus(uploadDecision.response)}
-                      </Text>
-                    </Stack>
-                    <Text size="sm">
-                      {formatRejectedUploadSummary(
-                        uploadDecision.response,
-                        uploadDecision.fileName,
-                      )}
-                    </Text>
-                    {uploadDecision.response.screeningSummary?.isRelevant === false ||
-                    uploadDecision.response.reason === "not_relevant" ||
-                    uploadDecision.response.reason === "possible_phi_detected_and_not_relevant" ? (
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept={ACCEPTED_EXTENSIONS.join(",")}
+                          className="hidden-file-input"
+                          onChange={(event) => handlePickedFile(event.currentTarget.files?.[0] ?? null)}
+                          disabled={isUploading || Boolean(uploadDecision)}
+                        />
+                        <Button
+                          variant="default"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isUploading || Boolean(uploadDecision)}
+                        >
+                          Choose File
+                        </Button>
+                      </Stack>
+                    </Paper>
+
+                    {selectedFile ? (
                       <Paper withBorder radius="md" p="sm">
-                        <Stack gap={4}>
-                          <Text size="sm" fw={600}>
-                            Relevance screening
-                          </Text>
-                          <Text size="sm">
-                            Result: <strong>Not relevant</strong>
-                          </Text>
-                          {uploadDecision.response.screeningSummary?.relevanceReason ? (
-                            <Text size="sm">
-                              Reason: {uploadDecision.response.screeningSummary.relevanceReason}
+                        <Group justify="space-between" align="center">
+                          <div>
+                            <Text fw={600}>{selectedFile.name}</Text>
+                            <Text size="sm" c="dimmed">
+                              {formatSize(selectedFile.size)}
                             </Text>
+                          </div>
+                          <Button
+                            onClick={handleUpload}
+                            loading={isUploading}
+                            disabled={isUploading || Boolean(uploadDecision)}
+                          >
+                            Upload
+                          </Button>
+                        </Group>
+                      </Paper>
+                    ) : null}
+
+                    {isUploading ? (
+                      <Progress value={uploadProgress} animated size="lg" radius="xl" />
+                    ) : null}
+
+                    {uploadError ? (
+                      <Alert
+                        color="red"
+                        variant="light"
+                        title="Upload error"
+                        withCloseButton
+                        closeButtonLabel="Dismiss upload error"
+                        onClose={() => setUploadError(null)}
+                      >
+                        {uploadError}
+                      </Alert>
+                    ) : null}
+                    {uploadSuccess ? (
+                      <Alert
+                        color="teal"
+                        variant="light"
+                        title={uploadSuccess.title}
+                        withCloseButton
+                        closeButtonLabel="Dismiss upload success"
+                        onClose={() => setUploadSuccess(null)}
+                      >
+                        <Stack gap={4}>
+                          <Text size="sm">{uploadSuccess.message}</Text>
+                          {uploadSuccess.screeningSummary ? (
+                            <>
+                              <Text size="sm">
+                                <strong>PHI screening:</strong>{" "}
+                                {getAcceptedPhiStatus(uploadSuccess.screeningSummary)}
+                              </Text>
+                              <Text size="sm">
+                                <strong>Relevance assessment:</strong>{" "}
+                                {getAcceptedRelevanceStatus(uploadSuccess.screeningSummary)}
+                              </Text>
+                            </>
                           ) : null}
                         </Stack>
-                      </Paper>
+                      </Alert>
                     ) : null}
-                    {uploadDecision.response.screeningSummary?.phiDetected ||
-                    uploadDecision.response.reason === "possible_phi_detected" ||
-                    uploadDecision.response.reason === "possible_phi_detected_and_not_relevant" ? (
-                      <Paper withBorder radius="md" p="sm">
-                        <Stack gap={6}>
-                          <Text size="sm" fw={600}>
-                            PHI Screening: Detected Categories
-                          </Text>
-                          {filteredPhiGroups.length ? (
-                            filteredPhiGroups.map((group) => {
-                              const visibleCount =
-                                visiblePhiGroupCounts[group.key] ?? INITIAL_PHI_GROUP_EXAMPLE_COUNT;
-                              const visibleItems = group.items.slice(0, visibleCount);
-                              const remainingCount = Math.max(group.items.length - visibleItems.length, 0);
-
-                              return (
-                                <Stack key={group.key} gap={4}>
-                                  <Text size="sm" fw={600}>
-                                    {group.label} ({group.items.length})
-                                  </Text>
-                                  {visibleItems.map((entity, index) => (
-                                    <Text key={`${group.key}-${entity.text}-${index}`} size="sm" pl="md">
-                                      - {entity.text || "Unknown"} ({formatPhiScore(entity.score)})
-                                    </Text>
-                                  ))}
-                                  {remainingCount > 0 ? (
-                                    <Group gap="xs">
-                                      <Button
-                                        size="xs"
-                                        variant="default"
-                                        onClick={() =>
-                                          setVisiblePhiGroupCounts((current) => ({
-                                            ...current,
-                                            [group.key]: Math.min(
-                                              visibleCount + INITIAL_PHI_GROUP_EXAMPLE_COUNT,
-                                              group.items.length,
-                                            ),
-                                          }))
-                                        }
-                                      >
-                                        Show {Math.min(INITIAL_PHI_GROUP_EXAMPLE_COUNT, remainingCount)} more
-                                      </Button>
-                                      <Button
-                                        size="xs"
-                                        variant="subtle"
-                                        onClick={() =>
-                                          setVisiblePhiGroupCounts((current) => ({
-                                            ...current,
-                                            [group.key]: group.items.length,
-                                          }))
-                                        }
-                                      >
-                                        Show all
-                                      </Button>
-                                    </Group>
-                                  ) : null}
-                                </Stack>
-                              );
-                            })
-                          ) : (
-                            <Text size="sm" c="dimmed">
-                              No PHI entries above 80% confidence were found to display.
+                    {uploadDecision ? (
+                      <Alert color="yellow" variant="light" title="Document review required">
+                        <Stack gap="sm">
+                          <Stack gap={4}>
+                            <Text size="sm">
+                              <strong>PHI screening:</strong>{" "}
+                              {getRejectedPhiStatus(uploadDecision.response)}
                             </Text>
-                          )}
+                            <Text size="sm">
+                              <strong>Relevance assessment:</strong>{" "}
+                              {getRejectedRelevanceStatus(uploadDecision.response)}
+                            </Text>
+                          </Stack>
+                          <Text size="sm">
+                            {formatRejectedUploadSummary(
+                              uploadDecision.response,
+                              uploadDecision.fileName,
+                            )}
+                          </Text>
+                          {uploadDecision.response.screeningSummary?.isRelevant === false ||
+                          uploadDecision.response.reason === "not_relevant" ||
+                          uploadDecision.response.reason ===
+                            "possible_phi_detected_and_not_relevant" ? (
+                            <Paper withBorder radius="md" p="sm">
+                              <Stack gap={4}>
+                                <Text size="sm" fw={600}>
+                                  Relevance screening
+                                </Text>
+                                <Text size="sm">
+                                  Result: <strong>Not relevant</strong>
+                                </Text>
+                                {uploadDecision.response.screeningSummary?.relevanceReason ? (
+                                  <Text size="sm">
+                                    Reason: {uploadDecision.response.screeningSummary.relevanceReason}
+                                  </Text>
+                                ) : null}
+                              </Stack>
+                            </Paper>
+                          ) : null}
+                          {uploadDecision.response.screeningSummary?.phiDetected ||
+                          uploadDecision.response.reason === "possible_phi_detected" ||
+                          uploadDecision.response.reason ===
+                            "possible_phi_detected_and_not_relevant" ? (
+                            <Paper withBorder radius="md" p="sm">
+                              <Stack gap={6}>
+                                <Text size="sm" fw={600}>
+                                  PHI Screening: Detected Categories
+                                </Text>
+                                {filteredPhiGroups.length ? (
+                                  filteredPhiGroups.map((group) => {
+                                    const visibleCount =
+                                      visiblePhiGroupCounts[group.key] ??
+                                      INITIAL_PHI_GROUP_EXAMPLE_COUNT;
+                                    const visibleItems = group.items.slice(0, visibleCount);
+                                    const remainingCount = Math.max(
+                                      group.items.length - visibleItems.length,
+                                      0,
+                                    );
+
+                                    return (
+                                      <Stack key={group.key} gap={4}>
+                                        <Text size="sm" fw={600}>
+                                          {group.label} ({group.items.length})
+                                        </Text>
+                                        {visibleItems.map((entity, index) => (
+                                          <Text
+                                            key={`${group.key}-${entity.text}-${index}`}
+                                            size="sm"
+                                            pl="md"
+                                          >
+                                            - {entity.text || "Unknown"} (
+                                            {formatPhiScore(entity.score)})
+                                          </Text>
+                                        ))}
+                                        {remainingCount > 0 ? (
+                                          <Group gap="xs">
+                                            <Button
+                                              size="xs"
+                                              variant="default"
+                                              onClick={() =>
+                                                setVisiblePhiGroupCounts((current) => ({
+                                                  ...current,
+                                                  [group.key]: Math.min(
+                                                    visibleCount +
+                                                      INITIAL_PHI_GROUP_EXAMPLE_COUNT,
+                                                    group.items.length,
+                                                  ),
+                                                }))
+                                              }
+                                            >
+                                              Show{" "}
+                                              {Math.min(
+                                                INITIAL_PHI_GROUP_EXAMPLE_COUNT,
+                                                remainingCount,
+                                              )}{" "}
+                                              more
+                                            </Button>
+                                            <Button
+                                              size="xs"
+                                              variant="subtle"
+                                              onClick={() =>
+                                                setVisiblePhiGroupCounts((current) => ({
+                                                  ...current,
+                                                  [group.key]: group.items.length,
+                                                }))
+                                              }
+                                            >
+                                              Show all
+                                            </Button>
+                                          </Group>
+                                        ) : null}
+                                      </Stack>
+                                    );
+                                  })
+                                ) : (
+                                  <Text size="sm" c="dimmed">
+                                    No PHI entries above 80% confidence were found to display.
+                                  </Text>
+                                )}
+                              </Stack>
+                            </Paper>
+                          ) : null}
+                          <Group gap="sm">
+                            <Button
+                              variant="default"
+                              onClick={() => void handleCancelRejectedUpload()}
+                              loading={isResolvingRejectedUpload}
+                              disabled={isResolvingRejectedUpload}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              color="yellow"
+                              onClick={() => void handleUploadAnyway()}
+                              loading={isResolvingRejectedUpload}
+                              disabled={isResolvingRejectedUpload}
+                            >
+                              Upload anyway
+                            </Button>
+                          </Group>
                         </Stack>
-                      </Paper>
+                      </Alert>
                     ) : null}
-                    <Group gap="sm">
-                      <Button
-                        variant="default"
-                        onClick={() => void handleCancelRejectedUpload()}
-                        loading={isResolvingRejectedUpload}
-                        disabled={isResolvingRejectedUpload}
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        color="yellow"
-                        onClick={() => void handleUploadAnyway()}
-                        loading={isResolvingRejectedUpload}
-                        disabled={isResolvingRejectedUpload}
-                      >
-                        Upload anyway
-                      </Button>
-                    </Group>
                   </Stack>
-                </Alert>
-              ) : null}
-            </Stack>
-          </Paper>
+                </Paper>
 
-          <Paper className="chat-card" p="lg" radius="lg" shadow="md">
-            <Stack gap="md">
-              <Group justify="space-between" align="center">
-                <Text fw={600}>S3 Documents</Text>
-                <Group gap="xs">
-                  <Button variant="default" onClick={() => void loadDocuments()} loading={isLoading}>
-                    Refresh
-                  </Button>
-                  <Button
-                    variant="light"
-                    onClick={() => setSortDirection((current) => (current === "asc" ? "desc" : "asc"))}
-                  >
-                    Sort filename {sortDirection === "asc" ? "A-Z" : "Z-A"}
-                  </Button>
-                </Group>
-              </Group>
+                <Paper className="chat-card" p="lg" radius="lg" shadow="md">
+                  <Stack gap="md">
+                    <Group justify="space-between" align="center">
+                      <Text fw={600}>S3 Documents</Text>
+                      <Group gap="xs">
+                        <Button variant="default" onClick={() => void loadDocuments()} loading={isLoading}>
+                          Refresh
+                        </Button>
+                        <Button
+                          variant="light"
+                          onClick={() =>
+                            setSortDirection((current) => (current === "asc" ? "desc" : "asc"))
+                          }
+                        >
+                          Sort filename {sortDirection === "asc" ? "A-Z" : "Z-A"}
+                        </Button>
+                      </Group>
+                    </Group>
 
-              <TextInput
-                placeholder="Search filename..."
-                value={filterText}
-                onChange={(event) => setFilterText(event.currentTarget.value)}
-                disabled={isLoading}
-              />
+                    <TextInput
+                      placeholder="Search filename..."
+                      value={filterText}
+                      onChange={(event) => setFilterText(event.currentTarget.value)}
+                      disabled={isLoading}
+                    />
 
-              {loadError ? (
-                <Alert
-                  color="red"
-                  variant="light"
-                  title="Could not load documents"
-                  withCloseButton
-                  closeButtonLabel="Dismiss load error"
-                  onClose={() => setLoadError(null)}
-                >
-                  {loadError}
-                </Alert>
-              ) : null}
+                    {loadError ? (
+                      <Alert
+                        color="red"
+                        variant="light"
+                        title="Could not load documents"
+                        withCloseButton
+                        closeButtonLabel="Dismiss load error"
+                        onClose={() => setLoadError(null)}
+                      >
+                        {loadError}
+                      </Alert>
+                    ) : null}
 
-              {deleteError ? (
-                <Alert
-                  color="red"
-                  variant="light"
-                  title="Delete error"
-                  withCloseButton
-                  closeButtonLabel="Dismiss delete error"
-                  onClose={() => setDeleteError(null)}
-                >
-                  {deleteError}
-                </Alert>
-              ) : null}
-              {deleteSuccess ? (
-                <Alert
-                  color="teal"
-                  variant="light"
-                  title="Delete complete"
-                  withCloseButton
-                  closeButtonLabel="Dismiss delete success"
-                  onClose={() => setDeleteSuccess(null)}
-                >
-                  {deleteSuccess}
-                </Alert>
-              ) : null}
+                    {deleteError ? (
+                      <Alert
+                        color="red"
+                        variant="light"
+                        title="Delete error"
+                        withCloseButton
+                        closeButtonLabel="Dismiss delete error"
+                        onClose={() => setDeleteError(null)}
+                      >
+                        {deleteError}
+                      </Alert>
+                    ) : null}
+                    {deleteSuccess ? (
+                      <Alert
+                        color="teal"
+                        variant="light"
+                        title="Delete complete"
+                        withCloseButton
+                        closeButtonLabel="Dismiss delete success"
+                        onClose={() => setDeleteSuccess(null)}
+                      >
+                        {deleteSuccess}
+                      </Alert>
+                    ) : null}
 
-              {isLoading ? (
-                <Text c="dimmed">Loading documents...</Text>
-              ) : filteredAndSortedDocuments.length === 0 ? (
-                <Text c="dimmed">No documents found for this filter.</Text>
-              ) : (
-                <Table striped highlightOnHover withTableBorder>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Filename</Table.Th>
-                      <Table.Th>Size</Table.Th>
-                      <Table.Th>Last Modified</Table.Th>
-                      <Table.Th>Action</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {filteredAndSortedDocuments.map((document) => (
-                      <Table.Tr key={document.key}>
-                        <Table.Td>{document.key}</Table.Td>
-                        <Table.Td>{formatSize(document.sizeBytes)}</Table.Td>
-                        <Table.Td>{formatDate(document.lastModified)}</Table.Td>
-                        <Table.Td>
-                          <Button
-                            color="red"
-                            variant="light"
-                            size="xs"
-                            onClick={() => openDeleteModal(document.key)}
-                            disabled={isDeleting || isUploading}
-                          >
-                            Delete
-                          </Button>
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
-              )}
-            </Stack>
-          </Paper>
+                    {isLoading ? (
+                      <Text c="dimmed">Loading documents...</Text>
+                    ) : filteredAndSortedDocuments.length === 0 ? (
+                      <Text c="dimmed">No documents found for this filter.</Text>
+                    ) : (
+                      <Table striped highlightOnHover withTableBorder>
+                        <Table.Thead>
+                          <Table.Tr>
+                            <Table.Th>Filename</Table.Th>
+                            <Table.Th>Size</Table.Th>
+                            <Table.Th>Last Modified</Table.Th>
+                            <Table.Th>Action</Table.Th>
+                          </Table.Tr>
+                        </Table.Thead>
+                        <Table.Tbody>
+                          {filteredAndSortedDocuments.map((document) => (
+                            <Table.Tr key={document.key}>
+                              <Table.Td>{document.key}</Table.Td>
+                              <Table.Td>{formatSize(document.sizeBytes)}</Table.Td>
+                              <Table.Td>{formatDate(document.lastModified)}</Table.Td>
+                              <Table.Td>
+                                <Button
+                                  color="red"
+                                  variant="light"
+                                  size="xs"
+                                  onClick={() => openDeleteModal(document.key)}
+                                  disabled={isDeleting || isUploading}
+                                >
+                                  Delete
+                                </Button>
+                              </Table.Td>
+                            </Table.Tr>
+                          ))}
+                        </Table.Tbody>
+                      </Table>
+                    )}
+                  </Stack>
+                </Paper>
+              </Stack>
+            </Tabs.Panel>
+
+            <Tabs.Panel value="unsupported-queries" pt="lg">
+              <Paper className="chat-card" p="lg" radius="lg" shadow="md">
+                <Stack gap="md">
+                  <Group justify="space-between" align="center">
+                    <Stack gap={2}>
+                      <Text fw={600}>Unsupported chatbot queries</Text>
+                      <Text size="sm" c="dimmed">
+                        Review questions the chatbot could not answer from the knowledge base.
+                      </Text>
+                    </Stack>
+                    <Button
+                      variant="default"
+                      onClick={() => void loadUnsupportedQueries()}
+                      loading={isUnsupportedQueriesLoading}
+                    >
+                      Refresh
+                    </Button>
+                  </Group>
+
+                  {unsupportedQueriesError ? (
+                    <Alert
+                      color="red"
+                      variant="light"
+                      title="Could not load unsupported queries"
+                      withCloseButton
+                      closeButtonLabel="Dismiss unsupported query load error"
+                      onClose={() => setUnsupportedQueriesError(null)}
+                    >
+                      {unsupportedQueriesError}
+                    </Alert>
+                  ) : null}
+
+                  {unsupportedDeleteError ? (
+                    <Alert
+                      color="red"
+                      variant="light"
+                      title="Delete error"
+                      withCloseButton
+                      closeButtonLabel="Dismiss unsupported query delete error"
+                      onClose={() => setUnsupportedDeleteError(null)}
+                    >
+                      {unsupportedDeleteError}
+                    </Alert>
+                  ) : null}
+
+                  {isUnsupportedQueriesLoading ? (
+                    <Text c="dimmed">Loading unsupported queries...</Text>
+                  ) : unsupportedQueries.length === 0 ? (
+                    <Text c="dimmed">No unsupported queries found.</Text>
+                  ) : (
+                    <Stack gap="sm">
+                      <Group justify="space-between" align="center">
+                        <Text size="sm" c="dimmed">
+                          {unsupportedQueries.length} quer{unsupportedQueries.length === 1 ? "y" : "ies"}
+                        </Text>
+                      </Group>
+                      <Table
+                        striped
+                        highlightOnHover
+                        withTableBorder
+                        style={{ tableLayout: "fixed" }}
+                      >
+                      <Table.Thead>
+                        <Table.Tr>
+                          <Table.Th style={{ width: "68%" }}>Query</Table.Th>
+                          <Table.Th style={{ width: "16%" }}>
+                            <UnstyledButton
+                              onClick={() =>
+                                setUnsupportedQuerySortDirection((current) =>
+                                  current === "latest" ? "oldest" : "latest",
+                                )
+                              }
+                              style={{
+                                color: "inherit",
+                                font: "inherit",
+                                fontWeight: "inherit",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                cursor: "pointer",
+                              }}
+                            >
+                              Timestamp {unsupportedQuerySortDirection === "latest" ? "▼" : "▲"}
+                            </UnstyledButton>
+                          </Table.Th>
+                          <Table.Th style={{ width: "16%" }}>Action</Table.Th>
+                        </Table.Tr>
+                      </Table.Thead>
+                        <Table.Tbody>
+                          {sortedUnsupportedQueries.map((query) => {
+                            const isExpanded = expandedUnsupportedQueryIds[query.id] ?? false;
+                            const isLongQuery =
+                              query.queryText.length > UNSUPPORTED_QUERY_PREVIEW_LENGTH;
+                            const visibleQueryText =
+                              isExpanded || !isLongQuery
+                                ? query.queryText
+                                : `${query.queryText.slice(0, UNSUPPORTED_QUERY_PREVIEW_LENGTH).trimEnd()}...`;
+
+                            return (
+                              <Table.Tr key={`${query.id}-${query.timestamp ?? "no-timestamp"}`}>
+                                <Table.Td>
+                                  <Stack gap={6}>
+                                    <Text size="sm" style={{ whiteSpace: "normal" }}>
+                                      {visibleQueryText}
+                                    </Text>
+                                    {isLongQuery ? (
+                                      <Button
+                                        variant="subtle"
+                                        size="compact-xs"
+                                        w="fit-content"
+                                        onClick={() => toggleUnsupportedQueryExpanded(query.id)}
+                                      >
+                                        Show {isExpanded ? "less" : "more"}
+                                      </Button>
+                                    ) : null}
+                                  </Stack>
+                                </Table.Td>
+                                <Table.Td style={{ width: "16%" }}>
+                                  {formatDate(query.timestamp)}
+                                </Table.Td>
+                                <Table.Td>
+                                  <Button
+                                    color="red"
+                                    variant="light"
+                                    size="xs"
+                                    onClick={() => void handleUnsupportedDelete(query)}
+                                    loading={pendingUnsupportedDeleteId === query.id}
+                                    disabled={pendingUnsupportedDeleteId !== null}
+                                  >
+                                    Delete
+                                  </Button>
+                                </Table.Td>
+                              </Table.Tr>
+                            );
+                          })}
+                        </Table.Tbody>
+                      </Table>
+                    </Stack>
+                  )}
+                </Stack>
+              </Paper>
+            </Tabs.Panel>
+          </Tabs>
         </Stack>
       </Container>
 
