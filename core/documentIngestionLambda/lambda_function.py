@@ -79,8 +79,25 @@ def _error_response(status_code, message):
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps({"error": message}),
     }
-    
-    
+
+
+def _extract_source_url(event: dict) -> str | None:
+    query_params = event.get("queryStringParameters") or {}
+    path_params = event.get("pathParameters") or {}
+    source_url = None
+
+    if isinstance(query_params, dict):
+        source_url = query_params.get("sourceUrl")
+
+    if not source_url and isinstance(path_params, dict):
+        source_url = path_params.get("sourceUrl")
+
+    if not isinstance(source_url, str):
+        return None
+
+    source_url = source_url.strip()
+    return source_url or None
+
 def sanitize_filename(name: str) -> str:
     name = name.strip()
     return re.sub(r"[^A-Za-z0-9._-]", "_", name)
@@ -335,6 +352,28 @@ def move_object(s3_client, src_bucket: str, src_key: str, dst_bucket: str, dst_k
     )
     s3_client.delete_object(Bucket=src_bucket, Key=src_key)
 
+
+def put_source_metadata_file(
+    s3_client,
+    bucket_name: str,
+    document_key: str,
+    source_url: str,
+) -> str:
+    metadata_key = f"{document_key}.metadata.json"
+    metadata_payload = {
+        "metadataAttributes": {
+            "source_url": source_url,
+        }
+    }
+
+    s3_client.put_object(
+        Bucket=bucket_name,
+        Key=metadata_key,
+        Body=json.dumps(metadata_payload).encode("utf-8"),
+        ContentType="application/json",
+    )
+    return metadata_key
+
 def _extract_json_object(text: str) -> dict:
     candidate = text.strip()
 
@@ -433,8 +472,8 @@ def _build_rejected_response(
     }
 
 
-def _build_accepted_response(accepted_key: str) -> dict:
-    return {
+def _build_accepted_response(accepted_key: str, source_url: str | None) -> dict:
+    response = {
         "status": "accepted",
         "message": "Document accepted and copied to KB bucket",
         "kbKey": accepted_key,
@@ -443,6 +482,11 @@ def _build_accepted_response(accepted_key: str) -> dict:
             "isRelevant": True,
         },
     }
+
+    if source_url:
+        response["sourceUrl"] = source_url
+
+    return response
 
 
 def lambda_handler(event, context):
@@ -464,6 +508,7 @@ def lambda_handler(event, context):
 
         path_params = event.get("pathParameters") or {}
         item_name = path_params.get("item") if isinstance(path_params, dict) else None
+        source_url = _extract_source_url(event)
 
         body_str = body if isinstance(body, str) else ""
         body_bytes = None
@@ -653,6 +698,15 @@ def lambda_handler(event, context):
                 MetadataDirective="COPY",
             )
 
+            if source_url:
+                metadata_key = put_source_metadata_file(
+                    s3_client=s3_client,
+                    bucket_name=kb_bucket_name,
+                    document_key=accepted_key,
+                    source_url=source_url,
+                )
+                logger.info(f"Uploaded source metadata file to KB bucket: {metadata_key}")
+
             logger.info(f"File successfully copied to KB bucket: {accepted_key}")
 
         except Exception as e:
@@ -677,7 +731,7 @@ def lambda_handler(event, context):
             )
             
             
-        return _success_response(200, _build_accepted_response(accepted_key))
+        return _success_response(200, _build_accepted_response(accepted_key, source_url))
         
     except Exception as exc:
         logger.exception("Unexpected error")

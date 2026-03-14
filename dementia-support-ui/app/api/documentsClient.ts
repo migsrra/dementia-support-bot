@@ -124,11 +124,19 @@ async function triggerKbSync() {
 }
 
  
-export async function uploadDocument(file: File): Promise<UploadDocumentResponse> {
+export async function uploadDocument(
+    file: File,
+    options?: { sourceUrl?: string },
+): Promise<UploadDocumentResponse> {
   assertConfigured("VITE_UPLOAD_API_BASE_URL", UPLOAD_API_BASE_URL);
 
   const safeName = encodeURIComponent(file.name);
-  const url = joinUrl(UPLOAD_API_BASE_URL, `${DOCS_API_UPLOAD_PATH}/${safeName}`);
+    let url = joinUrl(UPLOAD_API_BASE_URL, `${DOCS_API_UPLOAD_PATH}/${safeName}`);
+    const normalizedSourceUrl = options?.sourceUrl?.trim();
+    if (normalizedSourceUrl) {
+        const separator = url.includes("?") ? "&" : "?";
+        url = `${url}${separator}sourceUrl=${encodeURIComponent(normalizedSourceUrl)}`;
+    }
 
   const form = new FormData();
   form.append("file", file, file.name); // field name can be "file"
@@ -156,14 +164,24 @@ export async function uploadDocument(file: File): Promise<UploadDocumentResponse
 export async function uploadDocumentAnyway(
     uploadId: string,
     quarantineKey: string,
+    options?: { sourceUrl?: string },
 ): Promise<void> {
     assertConfigured("VITE_DOCUMENTS_UPLOAD_OVERRIDE", DOCS_API_UPLOAD_OVERRIDE_URL);
 
     const url = DOCS_API_UPLOAD_OVERRIDE_URL;
+    const normalizedSourceUrl = options?.sourceUrl?.trim();
+    const requestBody: { uploadId: string; quarantineKey: string; sourceUrl?: string } = {
+        uploadId,
+        quarantineKey,
+    };
+    if (normalizedSourceUrl) {
+        requestBody.sourceUrl = normalizedSourceUrl;
+    }
+
     await fetchOrThrow(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uploadId, quarantineKey }),
+        body: JSON.stringify(requestBody),
     });
 
     await triggerKbSync();
