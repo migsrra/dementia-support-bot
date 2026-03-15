@@ -4,12 +4,58 @@ export type DocumentItem = {
     lastModified?: string;
 };
 
+export type UploadAcceptedResponse = {
+    status: "accepted";
+    message?: string;
+    kbKey?: string;
+    screeningSummary?: UploadScreeningSummary;
+};
+
+export type UploadRejectedReason =
+    | "unable_to_extract_text"
+    | "possible_phi_detected"
+    | "possible_phi_detected_and_not_relevant"
+    | "not_relevant"
+    | string;
+
+export type UploadPhiDisplayItem = {
+    text?: string;
+    score?: number;
+};
+
+export type UploadPhiGroup = {
+    key: string;
+    label: string;
+    items: UploadPhiDisplayItem[];
+};
+
+export type UploadScreeningSummary = {
+    phiDetected: boolean;
+    isRelevant: boolean;
+    relevanceReason?: string;
+};
+
+export type UploadRejectedResponse = {
+    status: "rejected";
+    reason: UploadRejectedReason;
+    uploadId?: string;
+    quarantineKey?: string;
+    phiGroups?: UploadPhiGroup[];
+    screeningSummary?: UploadScreeningSummary;
+};
+
+export type UploadDocumentResponse = UploadAcceptedResponse | UploadRejectedResponse;
+
 const DOCS_API_BASE_URL = import.meta.env.VITE_DOCUMENTS_API_BASE_URL ?? "";
 const DOCS_API_LIST_PATH = import.meta.env.VITE_DOCUMENTS_LIST_PATH ?? "/documents/list";
 const DOCS_API_DELETE_PATH = import.meta.env.VITE_DOCUMENTS_DELETE_PATH ?? "/documents/delete";
 
 const UPLOAD_API_BASE_URL = import.meta.env.VITE_UPLOAD_API_BASE_URL ?? DOCS_API_BASE_URL;
 const DOCS_API_UPLOAD_PATH = import.meta.env.VITE_DOCUMENTS_UPLOAD_PATH ?? "/documents/upload";
+
+const DOCS_API_UPLOAD_OVERRIDE_URL = import.meta.env.VITE_DOCUMENTS_UPLOAD_OVERRIDE ?? "";
+const DOCS_API_CANCEL_UPLOAD_PATH =
+    import.meta.env.VITE_DOCUMENTS_CANCEL_UPLOAD_PATH ?? "/documents/cancel-upload";
 const KB_SYNC_API_URL = import.meta.env.VITE_KB_SYNC_API_URL ?? "";
 
 
@@ -78,23 +124,82 @@ async function triggerKbSync() {
 }
 
  
-export async function uploadDocument(file: File): Promise<void> {
+export async function uploadDocument(
+    file: File,
+    options?: { sourceUrl?: string },
+): Promise<UploadDocumentResponse> {
   assertConfigured("VITE_UPLOAD_API_BASE_URL", UPLOAD_API_BASE_URL);
 
   const safeName = encodeURIComponent(file.name);
-  const url = joinUrl(UPLOAD_API_BASE_URL, `${DOCS_API_UPLOAD_PATH}/${safeName}`);
+    let url = joinUrl(UPLOAD_API_BASE_URL, `${DOCS_API_UPLOAD_PATH}/${safeName}`);
+    const normalizedSourceUrl = options?.sourceUrl?.trim();
+    if (normalizedSourceUrl) {
+        const separator = url.includes("?") ? "&" : "?";
+        url = `${url}${separator}sourceUrl=${encodeURIComponent(normalizedSourceUrl)}`;
+    }
 
   const form = new FormData();
   form.append("file", file, file.name); // field name can be "file"
 
-  await fetchOrThrow(url, {
+  const res = await fetchOrThrow(url, {
     method: "POST",
     body: form,
     // IMPORTANT:
     // - do NOT set Content-Type manually
     // - browser will set multipart/form-data; boundary=...
   });
-  await triggerKbSync();
+
+  const payload = (await res.json().catch(() => null)) as UploadDocumentResponse | null;
+  if (!payload?.status) {
+    throw new Error("Upload API returned an unexpected response.");
+  }
+
+  if (payload.status === "accepted") {
+    await triggerKbSync();
+  }
+
+  return payload;
+}
+
+export async function uploadDocumentAnyway(
+    uploadId: string,
+    quarantineKey: string,
+    options?: { sourceUrl?: string },
+): Promise<void> {
+    assertConfigured("VITE_DOCUMENTS_UPLOAD_OVERRIDE", DOCS_API_UPLOAD_OVERRIDE_URL);
+
+    const url = DOCS_API_UPLOAD_OVERRIDE_URL;
+    const normalizedSourceUrl = options?.sourceUrl?.trim();
+    const requestBody: { uploadId: string; quarantineKey: string; sourceUrl?: string } = {
+        uploadId,
+        quarantineKey,
+    };
+    if (normalizedSourceUrl) {
+        requestBody.sourceUrl = normalizedSourceUrl;
+    }
+
+    await fetchOrThrow(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+    });
+
+    await triggerKbSync();
+}
+
+export async function cancelDocumentUpload(quarantineKey: string): Promise<void> {
+
+
+    // Can comment out if TTL implemented for rejected documents. 
+
+    // assertConfigured("VITE_DOCUMENTS_API_BASE_URL", DOCS_API_BASE_URL);
+
+    // // Mirror deleteDocument, but target the quarantine object endpoint instead.
+    // const url = joinUrl(
+    //     DOCS_API_BASE_URL,
+    //     `${DOCS_API_CANCEL_UPLOAD_PATH}/${encodeURIComponent(quarantineKey)}`,
+    // );
+    // await fetchOrThrow(url, { method: "DELETE" });
 }
 
 
@@ -104,5 +209,7 @@ export async function uploadDocument(file: File): Promise<void> {
 void DOCS_API_BASE_URL;
 void DOCS_API_LIST_PATH;
 void DOCS_API_UPLOAD_PATH;
+void DOCS_API_UPLOAD_OVERRIDE_URL;
+void DOCS_API_CANCEL_UPLOAD_PATH;
 void DOCS_API_DELETE_PATH;
 void KB_SYNC_API_URL;
