@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 import uuid
 import re
+from textwrap import dedent
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -17,27 +18,35 @@ BEDROCK_AGENT_ID = os.getenv("BEDROCK_AGENT_ID")
 BEDROCK_ALIAS_ID = os.getenv("BEDROCK_ALIAS_ID")
 DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME")
 
-MAID_EUTHANESIA_TEMPLATE = """
+MAID_EUTHANESIA_TEMPLATE = dedent(
+    """
     I'm not able to respond to this request, please consult your physician.
 
-    I am here to help with general dementia caregiving strategies, tips for daily routines, or behavioral support. 
+    I am here to help with general dementia caregiving strategies, tips for daily routines, or behavioural support.
+    
     Would you like guidance on any of those topics?
-"""
+    """
+).strip()
 
-PROMPT_ATTACK_TEMPLATE = """
-    I’m here to support questions specifically related to dementia caregiving. 
-    I’m not able to provide guidance outside of that scope. 
+PROMPT_ATTACK_TEMPLATE = dedent(
+    """
+    I’m here to support questions specifically related to dementia caregiving. I’m not able to provide guidance outside of that scope.
 
-    If you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help. 
+    If you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+
     Is there a specific caregiving topic you’d like guidance on?
     """
+).strip()
 
-UNSUPPORTED_QUERY_TEMPLATE = """
+UNSUPPORTED_QUERY_TEMPLATE = dedent(
+    """
     I don't have the necessary information on that subject at the moment. My knowledge base is constantly improving, so please ask me again at a later date.
 
-    If you have any other questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help. 
+    If you have any other questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+
     Is there a specific dementia-related topic you’d like guidance on?
-"""
+    """
+).strip()
 
 harm_priority_order = [
     "Self_Harm_High",
@@ -166,6 +175,7 @@ def lambda_handler(event, context):
         grounding_action = None
         relevance_score = None
         relevance_action = None
+        send_to_db = False
 
         assessments = guardrail_response.get("assessments", [])
 
@@ -294,8 +304,6 @@ def lambda_handler(event, context):
                 if routing_mode in output_checked_topics:
                     print("DEBUG CONTEXT", clean_context)       # would only collect references if allowed/low risk topic
 
-                send_to_db = False
-
                 if clean_context and routing_mode in output_checked_topics:         # only check grounding and relevance if allowed or low risk topic
                     try:
                         guardrail_check = bedrock_runtime.apply_guardrail(
@@ -327,6 +335,7 @@ def lambda_handler(event, context):
                         # Extract specific scores for dementia bot logic
                         for assessment in guardrail_check.get("assessments", []):
                             grounding_policy = assessment.get("contextualGroundingPolicy", {})
+                            print(f"assessment result: {grounding_policy}")
 
                             for filter_obj in grounding_policy.get("filters", []):
                                 score = filter_obj.get("score")
@@ -351,7 +360,7 @@ def lambda_handler(event, context):
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
 
-                elif send_to_db or (not clean_context and routing_mode in output_checked_topics):       # if did not find references for an allowed/low risk topic
+                if send_to_db or (not clean_context and routing_mode in output_checked_topics):       # if did not find references for an allowed/low risk topic
                     print("No references returned, grounding failed. Forwarding to physician")
                     completion = UNSUPPORTED_QUERY_TEMPLATE
                     send_to_db = True
@@ -403,11 +412,10 @@ def lambda_handler(event, context):
             "relevance_action": relevance_action
         }
 
-        if attribution is not None:
-            response_body["attribution"] = attribution
         if send_to_db:
             response_body["sent_for_review"] = True
-
+        elif attribution is not None: # don't want to add whatever irrelevant source to response if grounding failed
+            response_body["attribution"] = attribution
         return _success_response(200, response_body)
     
     except Exception as exc:
