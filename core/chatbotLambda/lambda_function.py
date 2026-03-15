@@ -3,7 +3,10 @@ import boto3
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
+import uuid
 import re
+from textwrap import dedent
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -13,21 +16,37 @@ AWS_PROFILE = os.getenv("AWS_PROFILE")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 BEDROCK_AGENT_ID = os.getenv("BEDROCK_AGENT_ID")
 BEDROCK_ALIAS_ID = os.getenv("BEDROCK_ALIAS_ID")
+DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME")
 
-MAID_EUTHANESIA_TEMPLATE = """
+MAID_EUTHANESIA_TEMPLATE = dedent(
+    """
     I'm not able to respond to this request, please consult your physician.
 
-    I am here to help with general dementia caregiving strategies, tips for daily routines, or behavioral support. 
+    I am here to help with general dementia caregiving strategies, tips for daily routines, or behavioural support.
+    
     Would you like guidance on any of those topics?
-"""
+    """
+).strip()
 
-PROMPT_ATTACK_TEMPLATE = """
-    I’m here to support questions specifically related to dementia caregiving. 
-    I’m not able to provide guidance outside of that scope. 
+PROMPT_ATTACK_TEMPLATE = dedent(
+    """
+    I’m here to support questions specifically related to dementia caregiving. I’m not able to provide guidance outside of that scope.
 
-    If you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help. 
+    If you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+
     Is there a specific caregiving topic you’d like guidance on?
     """
+).strip()
+
+UNSUPPORTED_QUERY_TEMPLATE = dedent(
+    """
+    I don't have the necessary information on that subject at the moment. My knowledge base is constantly improving, so please ask me again at a later date.
+
+    If you have any other questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+
+    Is there a specific dementia-related topic you’d like guidance on?
+    """
+).strip()
 
 harm_priority_order = [
     "Self_Harm_High",
@@ -156,6 +175,7 @@ def lambda_handler(event, context):
         grounding_action = None
         relevance_score = None
         relevance_action = None
+        send_to_db = False
 
         assessments = guardrail_response.get("assessments", [])
 
@@ -251,13 +271,6 @@ def lambda_handler(event, context):
                         chunk = event.get("chunk")
                         completion += chunk["bytes"].decode()
 
-                        # miguel old references code
-                        # chunk_attribution = chunk.get("attribution")
-                        # if chunk_attribution and isinstance(chunk_attribution, dict):
-                        #     citations = chunk_attribution.get("citations")
-                        #     if isinstance(citations, list):
-                        #         attribution_citations.extend(citations)
-
                         chunk_attribution = chunk.get("attribution", {})
                         if chunk_attribution and isinstance(chunk_attribution, dict):
                             citations = chunk_attribution.get("citations", [])
@@ -319,9 +332,10 @@ def lambda_handler(event, context):
                             ]
                         )
         
-                        # Extract specific scores for your dementia bot logic
+                        # Extract specific scores for dementia bot logic
                         for assessment in guardrail_check.get("assessments", []):
                             grounding_policy = assessment.get("contextualGroundingPolicy", {})
+                            print(f"assessment result: {grounding_policy}")
 
                             for filter_obj in grounding_policy.get("filters", []):
                                 score = filter_obj.get("score")
@@ -338,13 +352,36 @@ def lambda_handler(event, context):
                                 # Custom threshold logic (optional)
                                 if filter_type == "GROUNDING" and grounding_action == "BLOCKED":
                                     print("Low grounding detected. Agent might be hallucinating.")
+                                    send_to_db = True
+
                                 elif filter_type == "RELEVANCE" and relevance_action == "BLOCKED":
                                     print("Low relevance detected.")
 
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
-                elif not clean_context and routing_mode in output_checked_topics:       # if did not find references for an allowed/low risk topic
-                    print("No references returned, grounding failed. Should forward to physician")
+
+                if send_to_db or (not clean_context and routing_mode in output_checked_topics):       # if did not find references for an allowed/low risk topic
+                    print("No references returned, grounding failed. Forwarding to physician")
+                    completion = UNSUPPORTED_QUERY_TEMPLATE
+                    send_to_db = True
+                    try:
+                        if not DYNAMODB_TABLE_NAME:
+                            logger.error("DYNAMODB_TABLE_NAME not configured")
+                        else:
+                            dynamodb_table = session.resource("dynamodb").Table(DYNAMODB_TABLE_NAME)
+                            timestamp_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                            dynamodb_table.put_item(
+                                Item={
+                                    "query_id": str(uuid.uuid4()),
+                                    "timestamp": timestamp_utc,
+                                    "deleted": False,
+                                    "query_text": body_str,
+                                }
+                            )
+                    except Exception as e:
+                        logger.error(f"Failed to save unsupported prompt to DynamoDB: {e}")
+                    print("prompt sent to db successfully")
+            
                     
                 # save output values
                 # response = completion
@@ -375,9 +412,10 @@ def lambda_handler(event, context):
             "relevance_action": relevance_action
         }
 
-        if attribution is not None:
+        if send_to_db:
+            response_body["sent_for_review"] = True
+        elif attribution is not None: # don't want to add whatever irrelevant source to response if grounding failed
             response_body["attribution"] = attribution
-
         return _success_response(200, response_body)
     
     except Exception as exc:
