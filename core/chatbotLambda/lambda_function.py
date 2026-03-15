@@ -107,6 +107,8 @@ def lambda_handler(event, context):
         session = _build_session()
         path_params = event.get("pathParameters") or {}
         session_id = path_params.get("sessionID") if isinstance(path_params, dict) else None
+        completion = ""
+        attribution = None
 
         body = event.get("body")
         body_str = body if isinstance(body, str) else None

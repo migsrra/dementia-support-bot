@@ -1,5 +1,6 @@
 import type { Route } from "./+types/home";
 import {
+  Anchor,
   Box,
   Button,
   Container,
@@ -39,6 +40,27 @@ type Conversation = {
   messages: ChatMessage[];
 };
 
+const URL_PATTERN = /(https?:\/\/[^\s]+)/g;
+
+function renderMessageWithLinks(text: string) {
+  const parts = text.split(URL_PATTERN);
+  return parts.map((part, index) => {
+    if (/^https?:\/\/\S+$/.test(part)) {
+      return (
+        <Anchor
+          key={`${part}-${index}`}
+          href={part}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {part}
+        </Anchor>
+      );
+    }
+    return part;
+  });
+}
+
 function createSessionId() {
   if (
     typeof crypto !== "undefined" &&
@@ -66,32 +88,31 @@ let nextConversationId = 2;
 function formatCitationsInline(citations: unknown[]): string {
   if (!citations?.length) return "";
 
-  const allUris: string[] = [];
+  const allLinks: string[] = [];
 
   citations.forEach((c) => {
     const cit = c as any;
-    const refs = Array.isArray(cit?.retrievedReferences) ? cit.retrievedReferences : [];
+    const refs = Array.isArray(cit?.retrievedReferences)
+      ? cit.retrievedReferences
+      : [];
 
     refs.forEach((ref: any) => {
+      const sourceUrl = ref?.metadata?.source_url ?? null;
       const uri =
-        ref?.location?.s3Location?.uri ??
         ref?.location?.webLocation?.url ??
+        ref?.location?.s3Location?.uri ??
         ref?.location?.uri ??
         ref?.location?.path ??
         null;
 
-      if (uri) allUris.push(String(uri));
+      const preferredLink = sourceUrl ?? uri;
+      if (preferredLink) allLinks.push(String(preferredLink));
     });
   });
 
   // dedupe while keeping order
-  const uniq = allUris.filter((u, idx) => allUris.indexOf(u) === idx);
-
-  // shorten to just filenames (nicer UX)
-  const pretty = uniq.map((u, i) => {
-    const file = u.startsWith("s3://") ? u.split("/").pop() : u;
-    return `[${i + 1}] ${file}`;
-  });
+  const uniq = allLinks.filter((u, idx) => allLinks.indexOf(u) === idx);
+  const pretty = uniq.map((u, i) => `[${i + 1}] ${u}`);
 
   return `\n\nSources:\n${pretty.join("\n")}`;
 }
@@ -113,14 +134,19 @@ async function getAssistantReply(
 
     const citations = data.attribution?.citations ?? [];
 
-    const baseText = data.response || "Sorry, I couldn't get an answer right now.";
+    const baseText =
+      data.response || "Sorry, I couldn't get an answer right now.";
 
     const text = baseText + formatCitationsInline(citations);
     return { text, citations };
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    if (error instanceof DOMException && error.name === "AbortError")
+      throw error;
     console.error("invokeAgent error:", error);
-    return { text: "Sorry, I couldn't reach the assistant right now.", citations: [] };
+    return {
+      text: "Sorry, I couldn't reach the assistant right now.",
+      citations: [],
+    };
   }
 }
 
@@ -375,7 +401,9 @@ export default function Home() {
                       <Text size="sm" fw={600} className="message-label">
                         {message.role === "assistant" ? "Assistant" : "You"}
                       </Text>
-                      <Text style={{ whiteSpace: "pre-wrap" }}>{message.text}</Text>
+                      <Text style={{ whiteSpace: "pre-wrap" }}>
+                        {renderMessageWithLinks(message.text)}
+                      </Text>
                     </Paper>
                   ))}
                   {isSending && activeConversation ? (
