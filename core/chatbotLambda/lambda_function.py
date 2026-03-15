@@ -42,14 +42,15 @@ non_harm_priority_order = [
     "Medication_Dosing_Changes",
     "Medical_Diagnosis_Interpretation",
     "Legal_High_Stakes_Financial_Execution",
-    "Non_Dementia_Related_Queries"
+    "Dementia_Related"
 ]
 
 output_checked_topics = [
     "Allowed",
     "Self_Harm_Low",
     "Patient_Aggression_Low",
-    "Caregiver_Burnout_Low"
+    "Caregiver_Burnout_Low",
+    "Medical_Education_Inquiry"
 ]
 
 def extract_masked_text(guardrail_output):
@@ -120,7 +121,7 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "11")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "18")
 
         # add tag around query to aid guardrail processing
         suffix = str(uuid.uuid4())[:8]
@@ -181,13 +182,18 @@ def lambda_handler(event, context):
                 message = "MAID_Euthanesia"
                 completion = MAID_EUTHANESIA_TEMPLATE
                 bypass_agent = True
-            elif flagged_topics:
+            elif flagged_topics:             
                 priority_topic = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
-                if "Dementia_Related" in flagged_topics and priority_topic == "Non_Dementia_Related_Queries":
+
+                if "Dementia_Related" == priority_topic:        # only dementia_related flagged, therefore allowed
                     routing_mode = "Allowed"
+                elif "Medical_Education_Inquiry" in flagged_topics and ("Medical_Diagnosis_Interpretation" in flagged_topics or "Medication_Dosing_Changes" in flagged_topics):
+                    routing_mode = "Medical_Education_Inquiry"        # ignore medical diagnosis/medication flag if medical education on (they're over-sensitive)
                 else:
                     routing_mode = priority_topic
                 # print("non-harm:", routing_mode)
+            else:
+                routing_mode = "Non_Dementia_Related_Queries"       # not dementia related nor a crisis or non-crisis topic that is dementia related
         
             # Sensitive info check
             sensitiveInformationPolicy = assessment.get("sensitiveInformationPolicy", {})
@@ -280,7 +286,8 @@ def lambda_handler(event, context):
                 clean_context = "\n".join(unique_lines)
 
                 # print("DEBUG RESPONSE", completion)
-                # print("DEBUG CONTEXT", clean_context)
+                if routing_mode in output_checked_topics:
+                    print("DEBUG CONTEXT", clean_context)       # would only collect references if allowed/low risk topic
 
                 if clean_context and routing_mode in output_checked_topics:         # only check grounding and relevance if allowed or low risk topic
                     try:
@@ -334,7 +341,7 @@ def lambda_handler(event, context):
 
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
-                elif not clean_context:
+                elif not clean_context and routing_mode in output_checked_topics:       # if did not find references for an allowed/low risk topic
                     print("No references returned, grounding failed. Should forward to physician")
                     
                 # save output values
