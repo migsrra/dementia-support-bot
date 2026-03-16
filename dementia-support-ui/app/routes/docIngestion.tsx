@@ -23,7 +23,7 @@ import {
   cancelDocumentUpload,
   type DocumentItem,
   deleteDocument,
-  getDocumentDownloadUrl,
+  getDocumentBlob,
   listDocuments,
   type UploadScreeningSummary,
   uploadDocumentAnyway,
@@ -242,6 +242,10 @@ function getScreeningBadge(statusText: string) {
   };
 }
 
+function isPdfDocument(documentKey: string) {
+  return documentKey.toLowerCase().endsWith(".pdf");
+}
+
 export default function DocIngestion() {
   const [activeTab, setActiveTab] =
     useState<DocIngestionTab>("document-ingestion");
@@ -270,6 +274,13 @@ export default function DocIngestion() {
   const [pendingDownloadKey, setPendingDownloadKey] = useState<string | null>(
     null,
   );
+  const [previewDocumentKey, setPreviewDocumentKey] = useState<string | null>(
+    null,
+  );
+  const [previewDocumentUrl, setPreviewDocumentUrl] = useState<string | null>(
+    null,
+  );
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
@@ -375,6 +386,14 @@ export default function DocIngestion() {
   useEffect(() => {
     setVisiblePhiGroupCounts({});
   }, [uploadDecision]);
+
+  useEffect(() => {
+    return () => {
+      if (previewDocumentUrl) {
+        URL.revokeObjectURL(previewDocumentUrl);
+      }
+    };
+  }, [previewDocumentUrl]);
 
   const filteredAndSortedDocuments = useMemo(() => {
     const filtered = documents.filter(
@@ -610,13 +629,7 @@ export default function DocIngestion() {
     setPendingDownloadKey(documentKey);
 
     try {
-      const downloadUrl = await getDocumentDownloadUrl(documentKey);
-      const response = await fetch(downloadUrl, { method: "GET" });
-      if (!response.ok) {
-        throw new Error(`Download request failed with status ${response.status}.`);
-      }
-
-      const blob = await response.blob();
+      const blob = await getDocumentBlob(documentKey);
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
@@ -631,6 +644,42 @@ export default function DocIngestion() {
       setLoadError(message);
     } finally {
       setPendingDownloadKey(null);
+    }
+  }
+
+  function closePreviewModal() {
+    setPreviewDocumentKey(null);
+    setPreviewDocumentUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return null;
+    });
+  }
+
+  async function handlePreviewDocument(documentKey: string) {
+    if (isPreviewLoading || !isPdfDocument(documentKey)) return;
+
+    setLoadError(null);
+    setPreviewDocumentKey(documentKey);
+    setIsPreviewLoading(true);
+
+    try {
+      const blob = await getDocumentBlob(documentKey);
+      const objectUrl = URL.createObjectURL(blob);
+      setPreviewDocumentUrl((current) => {
+        if (current) {
+          URL.revokeObjectURL(current);
+        }
+        return objectUrl;
+      });
+    } catch (error) {
+      setPreviewDocumentKey(null);
+      const message =
+        error instanceof Error ? error.message : "Preview failed.";
+      setLoadError(message);
+    } finally {
+      setIsPreviewLoading(false);
     }
   }
 
@@ -1197,6 +1246,27 @@ export default function DocIngestion() {
                               </Table.Td>
                               <Table.Td>
                                 <Group gap="xs" wrap="nowrap">
+                                  {isPdfDocument(document.key) ? (
+                                    <Button
+                                      variant="light"
+                                      size="xs"
+                                      onClick={() =>
+                                        void handlePreviewDocument(document.key)
+                                      }
+                                      loading={
+                                        isPreviewLoading &&
+                                        previewDocumentKey === document.key
+                                      }
+                                      disabled={
+                                        isUploading ||
+                                        pendingDownloadKey !== null ||
+                                        (isPreviewLoading &&
+                                          previewDocumentKey !== document.key)
+                                      }
+                                    >
+                                      Preview
+                                    </Button>
+                                  ) : null}
                                   <Button
                                     variant="default"
                                     size="xs"
@@ -1408,6 +1478,33 @@ export default function DocIngestion() {
           </Tabs>
         </Stack>
       </Container>
+
+      <Modal
+        opened={Boolean(previewDocumentUrl && previewDocumentKey)}
+        onClose={closePreviewModal}
+        title={previewDocumentKey ? `Preview: ${previewDocumentKey}` : "PDF Preview"}
+        size="90%"
+        centered
+      >
+        <Stack gap="md">
+          {previewDocumentUrl ? (
+            <object
+              data={previewDocumentUrl}
+              type="application/pdf"
+              width="100%"
+              height="720"
+            >
+              <Text size="sm">
+                This browser could not display the PDF preview.
+              </Text>
+            </object>
+          ) : (
+            <Text size="sm" c="dimmed">
+              Loading PDF preview...
+            </Text>
+          )}
+        </Stack>
+      </Modal>
 
       <Modal
         opened={isDeleteModalOpen}
