@@ -23,6 +23,7 @@ import {
   cancelDocumentUpload,
   type DocumentItem,
   deleteDocument,
+  getDocumentDownloadUrl,
   listDocuments,
   type UploadScreeningSummary,
   uploadDocumentAnyway,
@@ -78,7 +79,8 @@ export function meta({}: Route.MetaArgs) {
     { title: "Document Manager" },
     {
       name: "description",
-      content: "Manage RAG knowledge documents with mock S3 upload and delete actions.",
+      content:
+        "Manage RAG knowledge documents with mock S3 upload and delete actions.",
     },
   ];
 }
@@ -99,7 +101,10 @@ function formatDate(isoDate?: string) {
 
 function validateFile(file: File) {
   const extension = `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`;
-  if (!ACCEPTED_EXTENSIONS.includes(extension) && !ACCEPTED_MIME_TYPES.has(file.type)) {
+  if (
+    !ACCEPTED_EXTENSIONS.includes(extension) &&
+    !ACCEPTED_MIME_TYPES.has(file.type)
+  ) {
     return "Unsupported file type. Allowed: pdf, txt, doc, docx, md.";
   }
   if (file.size > MAX_UPLOAD_SIZE_BYTES) {
@@ -151,7 +156,10 @@ function getAcceptedRelevanceStatus(summary?: UploadScreeningSummary) {
     : "Passed. The document appears relevant to the dementia knowledge base.";
 }
 
-function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName: string) {
+function formatRejectedUploadSummary(
+  response: UploadRejectedResponse,
+  fileName: string,
+) {
   const summary = response.screeningSummary;
   const phiDetected =
     summary?.phiDetected ||
@@ -165,8 +173,9 @@ function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName:
   if (phiDetected && isNotRelevant) {
     return (
       <>
-        <strong>"{fileName}"</strong> may contain <strong>Protected Health Information (PHI)</strong>{" "}
-        and does not appear <strong>relevant</strong> to the dementia knowledge base. Review the
+        <strong>"{fileName}"</strong> may contain{" "}
+        <strong>Protected Health Information (PHI)</strong> and does not appear{" "}
+        <strong>relevant</strong> to the dementia knowledge base. Review the
         document before adding it.
       </>
     );
@@ -175,8 +184,9 @@ function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName:
   if (phiDetected) {
     return (
       <>
-        <strong>"{fileName}"</strong> may contain <strong>Protected Health Information (PHI)</strong>.
-        Review the document before adding it to the dementia knowledge base.
+        <strong>"{fileName}"</strong> may contain{" "}
+        <strong>Protected Health Information (PHI)</strong>. Review the document
+        before adding it to the dementia knowledge base.
       </>
     );
   }
@@ -184,8 +194,8 @@ function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName:
   if (isNotRelevant) {
     return (
       <>
-        <strong>{fileName}</strong> does not appear <strong>relevant</strong> to the dementia
-        knowledge base. Review the document before adding it.
+        <strong>{fileName}</strong> does not appear <strong>relevant</strong> to
+        the dementia knowledge base. Review the document before adding it.
       </>
     );
   }
@@ -193,16 +203,17 @@ function formatRejectedUploadSummary(response: UploadRejectedResponse, fileName:
   if (response.reason === "unable_to_extract_text") {
     return (
       <>
-        <strong>No readable text</strong> could be extracted from <strong>{fileName}</strong>.
-        Review the document before adding it to the dementia knowledge base.
+        <strong>No readable text</strong> could be extracted from{" "}
+        <strong>{fileName}</strong>. Review the document before adding it to the
+        dementia knowledge base.
       </>
     );
   }
 
   return (
     <>
-      <strong>{fileName}</strong> requires <strong>manual review</strong> before it can be added to
-      the dementia knowledge base.
+      <strong>{fileName}</strong> requires <strong>manual review</strong> before
+      it can be added to the dementia knowledge base.
     </>
   );
 }
@@ -232,33 +243,52 @@ function getScreeningBadge(statusText: string) {
 }
 
 export default function DocIngestion() {
-  const [activeTab, setActiveTab] = useState<DocIngestionTab>("document-ingestion");
+  const [activeTab, setActiveTab] =
+    useState<DocIngestionTab>("document-ingestion");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
-  const [documentSortField, setDocumentSortField] = useState<DocumentSortField>("filename");
+  const [documentSortField, setDocumentSortField] =
+    useState<DocumentSortField>("filename");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<UploadSuccessState>(null);
-  const [uploadDecision, setUploadDecision] = useState<UploadDecisionState>(null);
-  const [visiblePhiGroupCounts, setVisiblePhiGroupCounts] = useState<Record<string, number>>({});
+  const [uploadDecision, setUploadDecision] =
+    useState<UploadDecisionState>(null);
+  const [visiblePhiGroupCounts, setVisiblePhiGroupCounts] = useState<
+    Record<string, number>
+  >({});
   const [isUploading, setIsUploading] = useState(false);
-  const [isResolvingRejectedUpload, setIsResolvingRejectedUpload] = useState(false);
+  const [isResolvingRejectedUpload, setIsResolvingRejectedUpload] =
+    useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [pendingDeleteKey, setPendingDeleteKey] = useState<string | null>(null);
+  const [pendingDownloadKey, setPendingDownloadKey] = useState<string | null>(
+    null,
+  );
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteSuccess, setDeleteSuccess] = useState<string | null>(null);
-  const [unsupportedQueries, setUnsupportedQueries] = useState<UnsupportedQuery[]>([]);
-  const [isUnsupportedQueriesLoading, setIsUnsupportedQueriesLoading] = useState(true);
-  const [unsupportedQueriesError, setUnsupportedQueriesError] = useState<string | null>(null);
-  const [unsupportedDeleteError, setUnsupportedDeleteError] = useState<string | null>(null);
-  const [pendingUnsupportedDeleteId, setPendingUnsupportedDeleteId] = useState<string | null>(null);
-  const [expandedUnsupportedQueryIds, setExpandedUnsupportedQueryIds] = useState<Record<string, boolean>>({});
+  const [unsupportedQueries, setUnsupportedQueries] = useState<
+    UnsupportedQuery[]
+  >([]);
+  const [isUnsupportedQueriesLoading, setIsUnsupportedQueriesLoading] =
+    useState(true);
+  const [unsupportedQueriesError, setUnsupportedQueriesError] = useState<
+    string | null
+  >(null);
+  const [unsupportedDeleteError, setUnsupportedDeleteError] = useState<
+    string | null
+  >(null);
+  const [pendingUnsupportedDeleteId, setPendingUnsupportedDeleteId] = useState<
+    string | null
+  >(null);
+  const [expandedUnsupportedQueryIds, setExpandedUnsupportedQueryIds] =
+    useState<Record<string, boolean>>({});
   const [unsupportedQuerySortDirection, setUnsupportedQuerySortDirection] =
     useState<UnsupportedQuerySortDirection>("latest");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -270,7 +300,8 @@ export default function DocIngestion() {
       const items = await listDocuments();
       setDocuments(items);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to load documents.";
+      const message =
+        error instanceof Error ? error.message : "Failed to load documents.";
       setLoadError(message);
     } finally {
       setIsLoading(false);
@@ -289,7 +320,9 @@ export default function DocIngestion() {
       setUnsupportedQueries(items);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Failed to load unsupported queries.";
+        error instanceof Error
+          ? error.message
+          : "Failed to load unsupported queries.";
       setUnsupportedQueriesError(message);
     } finally {
       setIsUnsupportedQueriesLoading(false);
@@ -357,7 +390,8 @@ export default function DocIngestion() {
         result = (a.sizeBytes ?? -1) - (b.sizeBytes ?? -1);
       } else {
         result =
-          new Date(a.lastModified ?? 0).getTime() - new Date(b.lastModified ?? 0).getTime();
+          new Date(a.lastModified ?? 0).getTime() -
+          new Date(b.lastModified ?? 0).getTime();
       }
       return sortDirection === "asc" ? result : -result;
     });
@@ -375,7 +409,9 @@ export default function DocIngestion() {
     ? getScreeningBadge(getAcceptedPhiStatus(uploadSuccess.screeningSummary))
     : null;
   const acceptedRelevanceStatus = uploadSuccess?.screeningSummary
-    ? getScreeningBadge(getAcceptedRelevanceStatus(uploadSuccess.screeningSummary))
+    ? getScreeningBadge(
+        getAcceptedRelevanceStatus(uploadSuccess.screeningSummary),
+      )
     : null;
   const rejectedPhiStatus = uploadDecision
     ? getScreeningBadge(getRejectedPhiStatus(uploadDecision.response))
@@ -445,7 +481,9 @@ export default function DocIngestion() {
     ]);
 
     try {
-      const response = await uploadDocument(selectedFile, { sourceUrl: normalizedSourceUrl });
+      const response = await uploadDocument(selectedFile, {
+        sourceUrl: normalizedSourceUrl,
+      });
       setUploadProgress(100);
 
       if (response.status === "accepted") {
@@ -483,7 +521,8 @@ export default function DocIngestion() {
   }
 
   async function handleCancelRejectedUpload() {
-    if (!uploadDecision?.response.quarantineKey || isResolvingRejectedUpload) return;
+    if (!uploadDecision?.response.quarantineKey || isResolvingRejectedUpload)
+      return;
 
     setIsResolvingRejectedUpload(true);
     setUploadError(null);
@@ -498,7 +537,8 @@ export default function DocIngestion() {
         message: `Cancelled upload for ${uploadDecision.fileName}`,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Cancel upload failed.";
+      const message =
+        error instanceof Error ? error.message : "Cancel upload failed.";
       setUploadError(message);
     } finally {
       setIsResolvingRejectedUpload(false);
@@ -533,7 +573,8 @@ export default function DocIngestion() {
         message: `Uploaded ${uploadDecision.fileName}`,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Upload anyway failed.";
+      const message =
+        error instanceof Error ? error.message : "Upload anyway failed.";
       setUploadError(message);
     } finally {
       setIsResolvingRejectedUpload(false);
@@ -548,7 +589,9 @@ export default function DocIngestion() {
     setDeleteSuccess(null);
     try {
       await deleteDocument(pendingDeleteKey);
-      setDocuments((current) => current.filter((document) => document.key !== pendingDeleteKey));
+      setDocuments((current) =>
+        current.filter((document) => document.key !== pendingDeleteKey),
+      );
       setDeleteSuccess(`Deleted ${pendingDeleteKey}`);
       setIsDeleteModalOpen(false);
       setPendingDeleteKey(null);
@@ -560,6 +603,37 @@ export default function DocIngestion() {
     }
   }
 
+  async function handleDownloadDocument(documentKey: string) {
+    if (pendingDownloadKey) return;
+
+    setLoadError(null);
+    setPendingDownloadKey(documentKey);
+
+    try {
+      const downloadUrl = await getDocumentDownloadUrl(documentKey);
+      const response = await fetch(downloadUrl, { method: "GET" });
+      if (!response.ok) {
+        throw new Error(`Download request failed with status ${response.status}.`);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = documentKey.split("/").pop() || "download";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Download failed.";
+      setLoadError(message);
+    } finally {
+      setPendingDownloadKey(null);
+    }
+  }
+
   async function handleUnsupportedDelete(query: UnsupportedQuery) {
     if (pendingUnsupportedDeleteId) return;
 
@@ -567,10 +641,14 @@ export default function DocIngestion() {
     setUnsupportedDeleteError(null);
     try {
       await deleteUnsupportedQuery(query.id, { timestamp: query.timestamp });
-      setUnsupportedQueries((current) => current.filter((item) => item.id !== query.id));
+      setUnsupportedQueries((current) =>
+        current.filter((item) => item.id !== query.id),
+      );
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Failed to delete unsupported query.";
+        error instanceof Error
+          ? error.message
+          : "Failed to delete unsupported query.";
       setUnsupportedDeleteError(message);
     } finally {
       setPendingUnsupportedDeleteId(null);
@@ -615,10 +693,17 @@ export default function DocIngestion() {
             </Button>
           </Group>
 
-          <Tabs value={activeTab} onChange={(value) => setActiveTab((value as DocIngestionTab) ?? "document-ingestion")}>
+          <Tabs
+            value={activeTab}
+            onChange={(value) =>
+              setActiveTab((value as DocIngestionTab) ?? "document-ingestion")
+            }
+          >
             <Tabs.List>
               <Tabs.Tab value="document-ingestion">Document Ingestion</Tabs.Tab>
-              <Tabs.Tab value="unsupported-queries">Unsupported Queries</Tabs.Tab>
+              <Tabs.Tab value="unsupported-queries">
+                Unsupported Queries
+              </Tabs.Tab>
             </Tabs.List>
 
             <Tabs.Panel value="document-ingestion" pt="lg">
@@ -642,14 +727,19 @@ export default function DocIngestion() {
                       <Stack gap="sm" align="center">
                         <Text fw={600}>Drag and drop a file here</Text>
                         <Text size="sm" c="dimmed">
-                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 25 MB)
+                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 25
+                          MB)
                         </Text>
                         <input
                           ref={fileInputRef}
                           type="file"
                           accept={ACCEPTED_EXTENSIONS.join(",")}
                           className="hidden-file-input"
-                          onChange={(event) => handlePickedFile(event.currentTarget.files?.[0] ?? null)}
+                          onChange={(event) =>
+                            handlePickedFile(
+                              event.currentTarget.files?.[0] ?? null,
+                            )
+                          }
                           disabled={isUploading || Boolean(uploadDecision)}
                         />
                         <Button
@@ -684,7 +774,9 @@ export default function DocIngestion() {
                             label="Source URL (optional)"
                             placeholder="https://example.com/original-document.pdf"
                             value={sourceUrl}
-                            onChange={(event) => setSourceUrl(event.currentTarget.value)}
+                            onChange={(event) =>
+                              setSourceUrl(event.currentTarget.value)
+                            }
                             disabled={isUploading || Boolean(uploadDecision)}
                           />
                         </Stack>
@@ -692,7 +784,12 @@ export default function DocIngestion() {
                     ) : null}
 
                     {isUploading ? (
-                      <Progress value={uploadProgress} animated size="lg" radius="xl" />
+                      <Progress
+                        value={uploadProgress}
+                        animated
+                        size="lg"
+                        radius="xl"
+                      />
                     ) : null}
 
                     {uploadError ? (
@@ -726,7 +823,10 @@ export default function DocIngestion() {
                                     PHI screening
                                   </Text>
                                   {acceptedPhiStatus ? (
-                                    <Badge color={acceptedPhiStatus.color} variant="light">
+                                    <Badge
+                                      color={acceptedPhiStatus.color}
+                                      variant="light"
+                                    >
                                       {acceptedPhiStatus.label}
                                     </Badge>
                                   ) : null}
@@ -743,7 +843,10 @@ export default function DocIngestion() {
                                     Relevance assessment
                                   </Text>
                                   {acceptedRelevanceStatus ? (
-                                    <Badge color={acceptedRelevanceStatus.color} variant="light">
+                                    <Badge
+                                      color={acceptedRelevanceStatus.color}
+                                      variant="light"
+                                    >
                                       {acceptedRelevanceStatus.label}
                                     </Badge>
                                   ) : null}
@@ -760,7 +863,11 @@ export default function DocIngestion() {
                       </Alert>
                     ) : null}
                     {uploadDecision ? (
-                      <Alert color="yellow" variant="light" title="Document review required">
+                      <Alert
+                        color="yellow"
+                        variant="light"
+                        title="Document review required"
+                      >
                         <Stack gap="sm">
                           <Stack gap={4}>
                             <Stack gap={2}>
@@ -769,7 +876,10 @@ export default function DocIngestion() {
                                   PHI screening
                                 </Text>
                                 {rejectedPhiStatus ? (
-                                  <Badge color={rejectedPhiStatus.color} variant="light">
+                                  <Badge
+                                    color={rejectedPhiStatus.color}
+                                    variant="light"
+                                  >
                                     {rejectedPhiStatus.label}
                                   </Badge>
                                 ) : null}
@@ -786,7 +896,10 @@ export default function DocIngestion() {
                                   Relevance assessment
                                 </Text>
                                 {rejectedRelevanceStatus ? (
-                                  <Badge color={rejectedRelevanceStatus.color} variant="light">
+                                  <Badge
+                                    color={rejectedRelevanceStatus.color}
+                                    variant="light"
+                                  >
                                     {rejectedRelevanceStatus.label}
                                   </Badge>
                                 ) : null}
@@ -804,7 +917,8 @@ export default function DocIngestion() {
                               uploadDecision.fileName,
                             )}
                           </Text>
-                          {uploadDecision.response.screeningSummary?.isRelevant === false ||
+                          {uploadDecision.response.screeningSummary
+                            ?.isRelevant === false ||
                           uploadDecision.response.reason === "not_relevant" ||
                           uploadDecision.response.reason ===
                             "possible_phi_detected_and_not_relevant" ? (
@@ -816,16 +930,23 @@ export default function DocIngestion() {
                                 <Text size="sm">
                                   Result: <strong>Not relevant</strong>
                                 </Text>
-                                {uploadDecision.response.screeningSummary?.relevanceReason ? (
+                                {uploadDecision.response.screeningSummary
+                                  ?.relevanceReason ? (
                                   <Text size="sm">
-                                    Reason: {uploadDecision.response.screeningSummary.relevanceReason}
+                                    Reason:{" "}
+                                    {
+                                      uploadDecision.response.screeningSummary
+                                        .relevanceReason
+                                    }
                                   </Text>
                                 ) : null}
                               </Stack>
                             </Paper>
                           ) : null}
-                          {uploadDecision.response.screeningSummary?.phiDetected ||
-                          uploadDecision.response.reason === "possible_phi_detected" ||
+                          {uploadDecision.response.screeningSummary
+                            ?.phiDetected ||
+                          uploadDecision.response.reason ===
+                            "possible_phi_detected" ||
                           uploadDecision.response.reason ===
                             "possible_phi_detected_and_not_relevant" ? (
                             <Paper withBorder radius="md" p="sm">
@@ -838,7 +959,10 @@ export default function DocIngestion() {
                                     const visibleCount =
                                       visiblePhiGroupCounts[group.key] ??
                                       INITIAL_PHI_GROUP_EXAMPLE_COUNT;
-                                    const visibleItems = group.items.slice(0, visibleCount);
+                                    const visibleItems = group.items.slice(
+                                      0,
+                                      visibleCount,
+                                    );
                                     const remainingCount = Math.max(
                                       group.items.length - visibleItems.length,
                                       0,
@@ -865,14 +989,16 @@ export default function DocIngestion() {
                                               size="xs"
                                               variant="default"
                                               onClick={() =>
-                                                setVisiblePhiGroupCounts((current) => ({
-                                                  ...current,
-                                                  [group.key]: Math.min(
-                                                    visibleCount +
-                                                      INITIAL_PHI_GROUP_EXAMPLE_COUNT,
-                                                    group.items.length,
-                                                  ),
-                                                }))
+                                                setVisiblePhiGroupCounts(
+                                                  (current) => ({
+                                                    ...current,
+                                                    [group.key]: Math.min(
+                                                      visibleCount +
+                                                        INITIAL_PHI_GROUP_EXAMPLE_COUNT,
+                                                      group.items.length,
+                                                    ),
+                                                  }),
+                                                )
                                               }
                                             >
                                               Show{" "}
@@ -886,10 +1012,13 @@ export default function DocIngestion() {
                                               size="xs"
                                               variant="subtle"
                                               onClick={() =>
-                                                setVisiblePhiGroupCounts((current) => ({
-                                                  ...current,
-                                                  [group.key]: group.items.length,
-                                                }))
+                                                setVisiblePhiGroupCounts(
+                                                  (current) => ({
+                                                    ...current,
+                                                    [group.key]:
+                                                      group.items.length,
+                                                  }),
+                                                )
                                               }
                                             >
                                               Show all
@@ -901,7 +1030,8 @@ export default function DocIngestion() {
                                   })
                                 ) : (
                                   <Text size="sm" c="dimmed">
-                                    No PHI entries above 80% confidence were found to display.
+                                    No PHI entries above 80% confidence were
+                                    found to display.
                                   </Text>
                                 )}
                               </Stack>
@@ -935,7 +1065,11 @@ export default function DocIngestion() {
                   <Stack gap="md">
                     <Group justify="space-between" align="center">
                       <Text fw={600}>S3 Documents</Text>
-                      <Button variant="default" onClick={() => void loadDocuments()} loading={isLoading}>
+                      <Button
+                        variant="default"
+                        onClick={() => void loadDocuments()}
+                        loading={isLoading}
+                      >
                         Refresh
                       </Button>
                     </Group>
@@ -943,7 +1077,9 @@ export default function DocIngestion() {
                     <TextInput
                       placeholder="Search filename..."
                       value={filterText}
-                      onChange={(event) => setFilterText(event.currentTarget.value)}
+                      onChange={(event) =>
+                        setFilterText(event.currentTarget.value)
+                      }
                       disabled={isLoading}
                     />
 
@@ -988,7 +1124,9 @@ export default function DocIngestion() {
                     {isLoading ? (
                       <Text c="dimmed">Loading documents...</Text>
                     ) : filteredAndSortedDocuments.length === 0 ? (
-                      <Text c="dimmed">No documents found for this filter.</Text>
+                      <Text c="dimmed">
+                        No documents found for this filter.
+                      </Text>
                     ) : (
                       <Table striped highlightOnHover withTableBorder>
                         <Table.Thead>
@@ -1027,7 +1165,9 @@ export default function DocIngestion() {
                             </Table.Th>
                             <Table.Th>
                               <UnstyledButton
-                                onClick={() => handleDocumentSort("lastModified")}
+                                onClick={() =>
+                                  handleDocumentSort("lastModified")
+                                }
                                 style={{
                                   color: "inherit",
                                   font: "inherit",
@@ -1038,7 +1178,8 @@ export default function DocIngestion() {
                                   cursor: "pointer",
                                 }}
                               >
-                                Last Modified{getDocumentSortIndicator("lastModified")}
+                                Last Modified
+                                {getDocumentSortIndicator("lastModified")}
                               </UnstyledButton>
                             </Table.Th>
                             <Table.Th>Action</Table.Th>
@@ -1048,18 +1189,47 @@ export default function DocIngestion() {
                           {filteredAndSortedDocuments.map((document) => (
                             <Table.Tr key={document.key}>
                               <Table.Td>{document.key}</Table.Td>
-                              <Table.Td>{formatSize(document.sizeBytes)}</Table.Td>
-                              <Table.Td>{formatDate(document.lastModified)}</Table.Td>
                               <Table.Td>
-                                <Button
-                                  color="red"
-                                  variant="light"
-                                  size="xs"
-                                  onClick={() => openDeleteModal(document.key)}
-                                  disabled={isDeleting || isUploading}
-                                >
-                                  Delete
-                                </Button>
+                                {formatSize(document.sizeBytes)}
+                              </Table.Td>
+                              <Table.Td>
+                                {formatDate(document.lastModified)}
+                              </Table.Td>
+                              <Table.Td>
+                                <Group gap="xs" wrap="nowrap">
+                                  <Button
+                                    variant="default"
+                                    size="xs"
+                                    onClick={() =>
+                                      void handleDownloadDocument(document.key)
+                                    }
+                                    loading={
+                                      pendingDownloadKey === document.key
+                                    }
+                                    disabled={
+                                      (pendingDownloadKey !== null &&
+                                        pendingDownloadKey !== document.key) ||
+                                      isUploading
+                                    }
+                                  >
+                                    Download
+                                  </Button>
+                                  <Button
+                                    color="red"
+                                    variant="light"
+                                    size="xs"
+                                    onClick={() =>
+                                      openDeleteModal(document.key)
+                                    }
+                                    disabled={
+                                      isDeleting ||
+                                      isUploading ||
+                                      pendingDownloadKey !== null
+                                    }
+                                  >
+                                    Delete
+                                  </Button>
+                                </Group>
                               </Table.Td>
                             </Table.Tr>
                           ))}
@@ -1078,7 +1248,8 @@ export default function DocIngestion() {
                     <Stack gap={2}>
                       <Text fw={600}>Unsupported chatbot queries</Text>
                       <Text size="sm" c="dimmed">
-                        Review questions the chatbot could not answer from the knowledge base.
+                        Review questions the chatbot could not answer from the
+                        knowledge base.
                       </Text>
                     </Stack>
                     <Button
@@ -1124,7 +1295,8 @@ export default function DocIngestion() {
                     <Stack gap="sm">
                       <Group justify="space-between" align="center">
                         <Text size="sm" c="dimmed">
-                          {unsupportedQueries.length} quer{unsupportedQueries.length === 1 ? "y" : "ies"}
+                          {unsupportedQueries.length} quer
+                          {unsupportedQueries.length === 1 ? "y" : "ies"}
                         </Text>
                       </Group>
                       <Table
@@ -1133,47 +1305,57 @@ export default function DocIngestion() {
                         withTableBorder
                         style={{ tableLayout: "fixed" }}
                       >
-                      <Table.Thead>
-                        <Table.Tr>
-                          <Table.Th style={{ width: "68%" }}>Query</Table.Th>
-                          <Table.Th style={{ width: "16%" }}>
-                            <UnstyledButton
-                              onClick={() =>
-                                setUnsupportedQuerySortDirection((current) =>
-                                  current === "latest" ? "oldest" : "latest",
-                                )
-                              }
-                              style={{
-                                color: "inherit",
-                                font: "inherit",
-                                fontWeight: "inherit",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 4,
-                                cursor: "pointer",
-                              }}
-                            >
-                              Timestamp {unsupportedQuerySortDirection === "latest" ? "▼" : "▲"}
-                            </UnstyledButton>
-                          </Table.Th>
-                          <Table.Th style={{ width: "16%" }}>Action</Table.Th>
-                        </Table.Tr>
-                      </Table.Thead>
+                        <Table.Thead>
+                          <Table.Tr>
+                            <Table.Th style={{ width: "68%" }}>Query</Table.Th>
+                            <Table.Th style={{ width: "16%" }}>
+                              <UnstyledButton
+                                onClick={() =>
+                                  setUnsupportedQuerySortDirection((current) =>
+                                    current === "latest" ? "oldest" : "latest",
+                                  )
+                                }
+                                style={{
+                                  color: "inherit",
+                                  font: "inherit",
+                                  fontWeight: "inherit",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Timestamp{" "}
+                                {unsupportedQuerySortDirection === "latest"
+                                  ? "▼"
+                                  : "▲"}
+                              </UnstyledButton>
+                            </Table.Th>
+                            <Table.Th style={{ width: "16%" }}>Action</Table.Th>
+                          </Table.Tr>
+                        </Table.Thead>
                         <Table.Tbody>
                           {sortedUnsupportedQueries.map((query) => {
-                            const isExpanded = expandedUnsupportedQueryIds[query.id] ?? false;
+                            const isExpanded =
+                              expandedUnsupportedQueryIds[query.id] ?? false;
                             const isLongQuery =
-                              query.queryText.length > UNSUPPORTED_QUERY_PREVIEW_LENGTH;
+                              query.queryText.length >
+                              UNSUPPORTED_QUERY_PREVIEW_LENGTH;
                             const visibleQueryText =
                               isExpanded || !isLongQuery
                                 ? query.queryText
                                 : `${query.queryText.slice(0, UNSUPPORTED_QUERY_PREVIEW_LENGTH).trimEnd()}...`;
 
                             return (
-                              <Table.Tr key={`${query.id}-${query.timestamp ?? "no-timestamp"}`}>
+                              <Table.Tr
+                                key={`${query.id}-${query.timestamp ?? "no-timestamp"}`}
+                              >
                                 <Table.Td>
                                   <Stack gap={6}>
-                                    <Text size="sm" style={{ whiteSpace: "normal" }}>
+                                    <Text
+                                      size="sm"
+                                      style={{ whiteSpace: "normal" }}
+                                    >
                                       {visibleQueryText}
                                     </Text>
                                     {isLongQuery ? (
@@ -1181,7 +1363,11 @@ export default function DocIngestion() {
                                         variant="subtle"
                                         size="compact-xs"
                                         w="fit-content"
-                                        onClick={() => toggleUnsupportedQueryExpanded(query.id)}
+                                        onClick={() =>
+                                          toggleUnsupportedQueryExpanded(
+                                            query.id,
+                                          )
+                                        }
                                       >
                                         Show {isExpanded ? "less" : "more"}
                                       </Button>
@@ -1196,9 +1382,15 @@ export default function DocIngestion() {
                                     color="red"
                                     variant="light"
                                     size="xs"
-                                    onClick={() => void handleUnsupportedDelete(query)}
-                                    loading={pendingUnsupportedDeleteId === query.id}
-                                    disabled={pendingUnsupportedDeleteId !== null}
+                                    onClick={() =>
+                                      void handleUnsupportedDelete(query)
+                                    }
+                                    loading={
+                                      pendingUnsupportedDeleteId === query.id
+                                    }
+                                    disabled={
+                                      pendingUnsupportedDeleteId !== null
+                                    }
                                   >
                                     Delete
                                   </Button>
@@ -1227,7 +1419,8 @@ export default function DocIngestion() {
       >
         <Stack gap="md">
           <Text size="sm">
-            Delete <strong>{pendingDeleteKey}</strong>? This action cannot be undone.
+            Delete <strong>{pendingDeleteKey}</strong>? This action cannot be
+            undone.
           </Text>
           <Group justify="flex-end">
             <Button
@@ -1237,7 +1430,11 @@ export default function DocIngestion() {
             >
               Cancel
             </Button>
-            <Button color="red" onClick={() => void confirmDelete()} loading={isDeleting}>
+            <Button
+              color="red"
+              onClick={() => void confirmDelete()}
+              loading={isDeleting}
+            >
               Delete
             </Button>
           </Group>
