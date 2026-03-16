@@ -57,6 +57,7 @@ const DOCS_API_UPLOAD_OVERRIDE_URL = import.meta.env.VITE_DOCUMENTS_UPLOAD_OVERR
 const DOCS_API_CANCEL_UPLOAD_PATH =
     import.meta.env.VITE_DOCUMENTS_CANCEL_UPLOAD_PATH ?? "/documents/cancel-upload";
 const KB_SYNC_API_URL = import.meta.env.VITE_KB_SYNC_API_URL ?? "";
+const PRESIGNED_BASE_URL = import.meta.env.VITE_PRESIGNED_BASE_URL ?? "";
 
 
 function assertConfigured(name: string, value: string) {
@@ -200,6 +201,34 @@ export async function cancelDocumentUpload(quarantineKey: string): Promise<void>
     //     `${DOCS_API_CANCEL_UPLOAD_PATH}/${encodeURIComponent(quarantineKey)}`,
     // );
     // await fetchOrThrow(url, { method: "DELETE" });
+}
+
+export async function getDocumentDownloadUrl(pdfName: string): Promise<string> {
+    assertConfigured("VITE_PRESIGNED_URL_BASE_URL", PRESIGNED_BASE_URL);
+
+    const url = joinUrl(PRESIGNED_BASE_URL, encodeURIComponent(pdfName));
+    const res = await fetchOrThrow(url, { method: "GET" });
+
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+
+    if (contentType.includes("application/json")) {
+        const payload = (await res.json().catch(() => null)) as
+            | { url?: string; presignedUrl?: string; presigned_url?: string }
+            | null;
+
+        const downloadUrl = payload?.url ?? payload?.presignedUrl ?? payload?.presigned_url;
+        if (!downloadUrl) {
+            throw new Error("Presigned URL API returned an unexpected response.");
+        }
+        return downloadUrl;
+    }
+
+    const text = (await res.text()).trim();
+    if (!text) {
+        throw new Error("Presigned URL API returned an empty response.");
+    }
+
+    return text;
 }
 
 
