@@ -83,7 +83,14 @@ output_checked_topics = [
 ]
 
 greeting_words = ["hi", "hello", "hey", "good morning", "good afternoon", "greetings"]
+pattern = r"\b(" + "|".join(greeting_words) + r")\b"
 
+def greeting_check(query):
+    if re.search(pattern, query, re.IGNORECASE):
+        return True
+    else:
+        return False
+    
 def extract_masked_text(guardrail_output):
     # Regex to find anything inside the custom Bedrock tags
     pattern = r"<amazon-bedrock-guardrails-guardContent_[^>]+>(.*?)</amazon-bedrock-guardrails-guardContent_[^>]+>"
@@ -220,20 +227,15 @@ def lambda_handler(event, context):
 
                 if "Dementia_Related" == priority_topic:        # only dementia_related flagged, therefore allowed
                     routing_mode = "Allowed"
-
-                    pattern = r"\b(" + "|".join(greeting_words) + r")\b"
-                    if re.search(pattern, body_str, re.IGNORECASE):     # if the query has a greeting (so wouldn't trigger dementia-related), allow it
-                        greeting_query = True
+                    greeting_query = greeting_check(body_str)     # set greeting flag to guide grounding check later
                 elif "Medical_Education_Inquiry" in flagged_topics and ("Medical_Diagnosis_Interpretation" in flagged_topics or "Medication_Dosing_Changes" in flagged_topics):
                     routing_mode = "Medical_Education_Inquiry"        # ignore medical diagnosis/medication flag if medical education on (they're over-sensitive)
                 else:
                     routing_mode = priority_topic
                 # print("non-harm:", routing_mode)
             else:
-                pattern = r"\b(" + "|".join(greeting_words) + r")\b"
-
-                if re.search(pattern, body_str, re.IGNORECASE):     # if the query is simply a greeting (so wouldn't trigger dementia-related), allow it
-                    greeting_query = True
+                greeting_query = greeting_check(body_str)
+                if greeting_query:     # if the query is simply a greeting (so wouldn't trigger dementia-related), allow it
                     routing_mode = "Allowed"            
                 else:               # not dementia related nor a crisis or non-crisis topic that is dementia related
                     routing_mode = "Non_Dementia_Related_Queries"       
