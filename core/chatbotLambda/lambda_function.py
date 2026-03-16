@@ -38,6 +38,76 @@ PROMPT_ATTACK_TEMPLATE = dedent(
     """
 ).strip()
 
+NON_DEMENTIA_TEMPLATE = dedent(
+    """
+    I’m here to support questions specifically related to dementia caregiving. I’m not able to provide guidance outside of that scope.
+
+    If you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+
+    Is there a specific caregiving topic you’d like guidance on?
+    """
+).strip()
+
+SELF_HARM_TEMPLATE = dedent(
+    """
+    I am very concerned about your safety. Please know that you are not alone, and help is available right now.
+
+    Please call or text 9-8-8 (the Canadian Suicide Crisis Helpline) to speak with someone who can support you.
+
+    If you are in immediate danger, please call 9-1-1 or go to the nearest emergency room. 
+    
+    Remember that your life is important, and there is support for you through this difficult time.
+    """
+).strip()
+
+PATIENT_AGGRESSION_TEMPLATE = dedent(
+    """
+    Your physical safety is the first priority. If you are in immediate danger, please call 9-1-1 right away.
+
+    If it is safe to do so, give yourself space by moving to another room. Do not argue with the patient as they cannot be reasoned with at the moment.
+
+    Remove triggers to ensure there are no dangerous objects within their reach.
+    
+    Once you are safe, please contact your doctor or a local crisis team to discuss these behavioral changes.
+    """
+).strip()
+
+CAREGIVER_BURNOUT_TEMPLATE = dedent(
+    """
+    It sounds like you are at a breaking point, and I want to make sure both you and your loved one stay safe.
+
+    Ensure the patient is in a safe place and then step away immediate for space.
+
+    I encourage you to reach out to trusted people or the Alzheimer Society of Canada at 1-800-616-8816 or emailing at info@alzheimer.ca for immediate support.
+    
+    Caring for someone with dementia is incredibly demanding, and reaching out for help right now is the right thing to do to prevent a crisis.
+    """
+).strip()
+
+MEDICAL_TEMPLATE = dedent(
+    """
+    I'm sorry but I cannot provide medical diagnoses, interpret test results, or give advice on changing medications. 
+    
+    These decisions require a clinical assessment by a healthcare professional who knows your specific situation.
+
+    Please contact your family physician for more information. If this is a medical emergency, please call 9-1-1 immediately.
+    
+    If you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+    """
+).strip()
+
+LEGAL_FINANCE_TEMPLATE = dedent(
+    """
+    I cannot provide legal advice or assist with financial transactions and estate planning.
+
+    These matters are legally complex and require professional expertise to ensure the rights and assets of both the caregiver and the person with dementia are protected.
+
+    If you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+
+    Is there a specific caregiving topic you’d like guidance on?
+    """
+).strip()
+
 UNSUPPORTED_QUERY_TEMPLATE = dedent(
     """
     I don't have the necessary information on that subject at the moment. My knowledge base is constantly improving, so please ask me again at a later date.
@@ -109,6 +179,14 @@ def harm_priority_topic(detected_topics):
             return topic
     return None
 
+def high_harm_template_choose(topic):
+    if topic == "Self_Harm_High":
+        return SELF_HARM_TEMPLATE
+    elif topic == "Patient_Aggression_High":
+        return PATIENT_AGGRESSION_TEMPLATE
+    else:
+        return CAREGIVER_BURNOUT_TEMPLATE
+    
 def non_harm_priority_topic(detected_topics):
     for topic in non_harm_priority_order:       # return highest priority non-harm topic
         if topic in detected_topics:
@@ -185,7 +263,6 @@ def lambda_handler(event, context):
         logger.info(json.dumps(guardrail_response, indent=2))
 
         message = "Allowed"
-        completion = ""
         routing_mode = "Allowed"
         greeting_query = False      # if greeting, allow and don't check groundedness
         bypass_agent = False
@@ -217,28 +294,41 @@ def lambda_handler(event, context):
 
             high_priority_topic = harm_priority_topic(flagged_topics)   # harm topics prioritized
             if high_priority_topic:
-                routing_mode = high_priority_topic
+                if high_priority_topic == "Self_Harm_Low" or high_priority_topic == "Patient_Aggression_Low" or high_priority_topic == "Caregiver_Burnout_Low":
+                    routing_mode = high_priority_topic
+                else:
+                    message = high_priority_topic
+                    completion = high_harm_template_choose(high_priority_topic)
+                    bypass_agent = True
             elif "MAID_Euthanesia" in flagged_topics:
                 message = "MAID_Euthanesia"
                 completion = MAID_EUTHANESIA_TEMPLATE
                 bypass_agent = True
             elif flagged_topics:             
                 priority_topic = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
+                # print(priority_topic)
 
                 if "Dementia_Related" == priority_topic:        # only dementia_related flagged, therefore allowed
                     routing_mode = "Allowed"
                     greeting_query = greeting_check(body_str)     # set greeting flag to guide grounding check later
-                elif "Medical_Education_Inquiry" in flagged_topics and ("Medical_Diagnosis_Interpretation" in flagged_topics or "Medication_Dosing_Changes" in flagged_topics):
-                    routing_mode = "Medical_Education_Inquiry"        # ignore medical diagnosis/medication flag if medical education on (they're over-sensitive)
+                elif "Medication_Dosing_Changes" == priority_topic or "Medical_Diagnosis_Interpretation" == priority_topic:
+                    message = priority_topic
+                    completion = MEDICAL_TEMPLATE
+                    bypass_agent = True
+                elif "Legal_High_Stakes_Financial_Execution" == priority_topic:
+                    message = priority_topic
+                    completion = LEGAL_FINANCE_TEMPLATE
+                    bypass_agent = True
                 else:
-                    routing_mode = priority_topic
-                # print("non-harm:", routing_mode)
+                    routing_mode = "Medical_Education_Inquiry"      # education question, not medical advice
             else:
                 greeting_query = greeting_check(body_str)
                 if greeting_query:     # if the query is simply a greeting (so wouldn't trigger dementia-related), allow it
                     routing_mode = "Allowed"            
                 else:               # not dementia related nor a crisis or non-crisis topic that is dementia related
-                    routing_mode = "Non_Dementia_Related_Queries"       
+                    message = "Non_Dementia_Related_Queries"     
+                    completion = NON_DEMENTIA_TEMPLATE
+                    bypass_agent = True    
         
             # Sensitive info check
             sensitiveInformationPolicy = assessment.get("sensitiveInformationPolicy", {})
@@ -318,7 +408,11 @@ def lambda_handler(event, context):
                     if 'trace' in event:
                         trace_event = event.get("trace")
                         print(f"trace: {trace_event}")
-                    
+                
+                # if names found and masked, remove from response as well
+                if " {NAME}" in completion:      
+                    completion = completion.replace(" {NAME}", "").strip()
+
                 # Create a list of lines, strip whitespace, and use a set to unique them
                 unique_lines = list(dict.fromkeys([line.strip() for line in retrieved_context.split("\n") if line.strip()]))
                 clean_context = "\n".join(unique_lines)
@@ -409,12 +503,6 @@ def lambda_handler(event, context):
                 elif not clean_context and routing_mode == "Allowed" and greeting_query:        # for testing that we properly leave greeting cases, no grounding
                     print("query with greeting and nothing else")
             
-                    
-                # save output values
-                message = routing_mode
-                if " {NAME}" in completion:      # if names found and masked, remove from response as well
-                    completion = completion.replace(" {NAME}", "").strip()
-
                 print(f"Amount of events: {eventLen}")
                 if attribution_citations:
                     attribution = {"citations": attribution_citations}
@@ -422,6 +510,8 @@ def lambda_handler(event, context):
             except Exception as e:
                 logger.error(f"Failed to invoke agent: {e}")
                 return _error_response(500, "Failed to invoke Bedrock Agent")
+
+            message = routing_mode
 
         # response_body = {
         #     "message": "Agent invoked and returned response",
