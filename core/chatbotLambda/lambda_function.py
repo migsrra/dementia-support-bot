@@ -48,6 +48,16 @@ UNSUPPORTED_QUERY_TEMPLATE = dedent(
     """
 ).strip()
 
+IRRELEVANT_RESPONSE_TEMPLATE = dedent(
+    """
+    I am unable to provide a relevant response to this query. Please try again and/or try re-phrasing your question.
+
+    If you have any other questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.
+
+    Is there a specific dementia-related topic you’d like guidance on?
+    """
+).strip()
+
 harm_priority_order = [
     "Self_Harm_High",
     "Patient_Aggression_High",
@@ -71,6 +81,8 @@ output_checked_topics = [
     "Caregiver_Burnout_Low",
     "Medical_Education_Inquiry"
 ]
+
+greeting_words = ["hi", "hello", "hey", "good morning", "good afternoon", "greetings"]
 
 def extract_masked_text(guardrail_output):
     # Regex to find anything inside the custom Bedrock tags
@@ -118,8 +130,6 @@ def _error_response(status_code, message):
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps({"error": message}),
     }
-
-
 
 def lambda_handler(event, context):
     try:
@@ -170,6 +180,7 @@ def lambda_handler(event, context):
         message = "Allowed"
         completion = ""
         routing_mode = "Allowed"
+        greeting_query = False      # if greeting, allow and don't check groundedness
         bypass_agent = False
         grounding_score = None
         grounding_action = None
@@ -209,13 +220,23 @@ def lambda_handler(event, context):
 
                 if "Dementia_Related" == priority_topic:        # only dementia_related flagged, therefore allowed
                     routing_mode = "Allowed"
+
+                    pattern = r"\b(" + "|".join(greeting_words) + r")\b"
+                    if re.search(pattern, body_str, re.IGNORECASE):     # if the query has a greeting (so wouldn't trigger dementia-related), allow it
+                        greeting_query = True
                 elif "Medical_Education_Inquiry" in flagged_topics and ("Medical_Diagnosis_Interpretation" in flagged_topics or "Medication_Dosing_Changes" in flagged_topics):
                     routing_mode = "Medical_Education_Inquiry"        # ignore medical diagnosis/medication flag if medical education on (they're over-sensitive)
                 else:
                     routing_mode = priority_topic
                 # print("non-harm:", routing_mode)
             else:
-                routing_mode = "Non_Dementia_Related_Queries"       # not dementia related nor a crisis or non-crisis topic that is dementia related
+                pattern = r"\b(" + "|".join(greeting_words) + r")\b"
+
+                if re.search(pattern, body_str, re.IGNORECASE):     # if the query is simply a greeting (so wouldn't trigger dementia-related), allow it
+                    greeting_query = True
+                    routing_mode = "Allowed"            
+                else:               # not dementia related nor a crisis or non-crisis topic that is dementia related
+                    routing_mode = "Non_Dementia_Related_Queries"       
         
             # Sensitive info check
             sensitiveInformationPolicy = assessment.get("sensitiveInformationPolicy", {})
@@ -304,7 +325,8 @@ def lambda_handler(event, context):
                 if routing_mode in output_checked_topics:
                     print("DEBUG CONTEXT", clean_context)       # would only collect references if allowed/low risk topic
 
-                if clean_context and routing_mode in output_checked_topics:         # only check grounding and relevance if allowed or low risk topic
+                # Grounding and Relevance check
+                if clean_context and routing_mode in output_checked_topics and not greeting_query:         # if allowed or low risk topic and not a greeting (normal query)
                     try:
                         guardrail_check = bedrock_runtime.apply_guardrail(
                             guardrailIdentifier=GUARDRAIL_ID,
@@ -353,14 +375,15 @@ def lambda_handler(event, context):
                                 if filter_type == "GROUNDING" and grounding_action == "BLOCKED":
                                     print("Low grounding detected. Agent might be hallucinating.")
                                     send_to_db = True
-
                                 elif filter_type == "RELEVANCE" and relevance_action == "BLOCKED":
                                     print("Low relevance detected.")
+                                    if not send_to_db:     # grounding passed, so set irrelevant template response
+                                        completion = IRRELEVANT_RESPONSE_TEMPLATE
 
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
 
-                if send_to_db or (not clean_context and routing_mode in output_checked_topics):       # if did not find references for an allowed/low risk topic
+                if send_to_db or (not clean_context and routing_mode in output_checked_topics and not greeting_query):       # if did not find references for an allowed/low risk topic
                     print("No references returned, grounding failed. Forwarding to physician")
                     completion = UNSUPPORTED_QUERY_TEMPLATE
                     send_to_db = True
@@ -381,11 +404,14 @@ def lambda_handler(event, context):
                     except Exception as e:
                         logger.error(f"Failed to save unsupported prompt to DynamoDB: {e}")
                     print("prompt sent to db successfully")
+                elif not clean_context and routing_mode == "Allowed" and greeting_query:        # for testing that we properly leave greeting cases, no grounding
+                    print("query with greeting and nothing else")
             
                     
                 # save output values
-                # response = completion
                 message = routing_mode
+                if " {NAME}" in completion:      # if names found and masked, remove from response as well
+                    completion = completion.replace(" {NAME}", "").strip()
 
                 print(f"Amount of events: {eventLen}")
                 if attribution_citations:
