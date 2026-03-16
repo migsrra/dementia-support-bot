@@ -54,6 +54,9 @@ const MANAGE_KBDOCS_LIST_PATH =
   import.meta.env.VITE_MANAGE_KBDOCS_LIST_PATH ?? "/documents";
 const MANAGE_KBDOCS_DELETE_PATH =
   import.meta.env.VITE_MANAGE_KBDOCS_DELETE_PATH ?? "/documents";
+const MANAGE_KBDOCS_QUARANTINE_DELETE_PATH =
+  import.meta.env.VITE_MANAGE_KBDOCS_QUARANTINE_DELETE_PATH ??
+  "/documents/quarantine";
 
 const UPLOAD_API_BASE_URL =
   import.meta.env.VITE_UPLOAD_API_BASE_URL ?? MANAGE_KBDOCS_API_BASE_URL;
@@ -62,9 +65,6 @@ const DOCS_API_UPLOAD_PATH =
 
 const DOCS_API_UPLOAD_OVERRIDE_URL =
   import.meta.env.VITE_DOCUMENTS_UPLOAD_OVERRIDE ?? "";
-const DOCS_API_CANCEL_UPLOAD_PATH =
-  import.meta.env.VITE_DOCUMENTS_CANCEL_UPLOAD_PATH ??
-  "/documents/cancel-upload";
 const KB_SYNC_API_URL = import.meta.env.VITE_KB_SYNC_API_URL ?? "";
 const PRESIGNED_BASE_URL = import.meta.env.VITE_PRESIGNED_BASE_URL ?? "";
 
@@ -74,6 +74,14 @@ function assertConfigured(name: string, value: string) {
 
 function joinUrl(base: string, path: string) {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+
+function encodePathPreservingSlashes(path: string) {
+  return path
+    .split("/")
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
 }
 
 async function fetchOrThrow(input: RequestInfo | URL, init?: RequestInit) {
@@ -203,14 +211,22 @@ export async function uploadDocumentAnyway(
 export async function cancelDocumentUpload(
   quarantineKey: string,
 ): Promise<void> {
-  // Can comment out if TTL implemented for rejected documents.
-  // assertConfigured("VITE_DOCUMENTS_API_BASE_URL", DOCS_API_BASE_URL);
-  // // Mirror deleteDocument, but target the quarantine object endpoint instead.
-  // const url = joinUrl(
-  //     DOCS_API_BASE_URL,
-  //     `${DOCS_API_CANCEL_UPLOAD_PATH}/${encodeURIComponent(quarantineKey)}`,
-  // );
-  // await fetchOrThrow(url, { method: "DELETE" });
+  assertConfigured(
+    "VITE_MANAGE_KBDOCS_API_BASE_URL",
+    MANAGE_KBDOCS_API_BASE_URL,
+  );
+
+  const encodedKey = encodePathPreservingSlashes(quarantineKey);
+  const url = joinUrl(
+    MANAGE_KBDOCS_API_BASE_URL,
+    `${MANAGE_KBDOCS_QUARANTINE_DELETE_PATH}/${encodedKey}`,
+  );
+
+
+// Comment out for debugging
+// Remove comment -> deletes quarantined document form screening KB
+
+//   await fetchOrThrow(url, { method: "DELETE" });
 }
 
 export async function getDocumentDownloadUrl(pdfName: string): Promise<string> {
