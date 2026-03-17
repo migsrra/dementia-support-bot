@@ -340,40 +340,6 @@ def lambda_handler(event, context):
                     message = "Non_Dementia_Related_Queries"     
                     completion = NON_DEMENTIA_TEMPLATE
                     bypass_agent = True    
-
-            # elif "Dementia_Related" in flagged_topics:      # for queries that ARE dementia related          
-            #     low_priority_topic = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
-            #     # print(priority_topic)
-
-            #     if "Dementia_Related" == low_priority_topic:        # only dementia_related flagged, therefore allowed
-            #         routing_mode = "Allowed"
-            #         greeting_query = greeting_check(body_str)     # set greeting flag to guide grounding check later
-            #     elif "Medication_Dosing_Changes" == low_priority_topic or "Medical_Diagnosis_Interpretation" == low_priority_topic:
-            #         # if also flagged education, verify if it is actually just educational and dementia related with word policy set in guardrail
-            #         word_policy = assessment.get("word_policy", {})
-            #         words = word_policy.get("customWords", [])
-            #         # print("custom words found:", words)
-
-            #         if not words and "Medical_Education_Inquiry" in flagged_topics:       
-            #             routing_mode = "Medical_Education_Inquiry"      # if no custom words, then it is a medical education inquiry
-            #         else:
-            #             message = low_priority_topic
-            #             completion = MEDICAL_TEMPLATE
-            #             bypass_agent = True
-            #     elif "Legal_High_Stakes_Financial_Execution" == low_priority_topic:
-            #         message = low_priority_topic
-            #         completion = LEGAL_FINANCE_TEMPLATE
-            #         bypass_agent = True
-            #     else:
-            #         routing_mode = "Medical_Education_Inquiry"      # education question, not medical advice
-            # else:       # for queries that are NOT dementia related
-            #     greeting_query = greeting_check(body_str)
-            #     if greeting_query:     # if the query is simply a greeting (so wouldn't trigger dementia-related), allow it
-            #         routing_mode = "Allowed"            
-            #     else:               # not dementia related nor a crisis or non-crisis topic that is dementia related
-            #         message = "Non_Dementia_Related_Queries"     
-            #         completion = NON_DEMENTIA_TEMPLATE
-            #         bypass_agent = True
         
             # Sensitive info check
             sensitiveInformationPolicy = assessment.get("sensitiveInformationPolicy", {})
