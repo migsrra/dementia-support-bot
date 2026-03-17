@@ -226,7 +226,7 @@ export async function cancelDocumentUpload(
 // Comment out for debugging
 // Remove comment -> deletes quarantined document form screening KB
 
-//   await fetchOrThrow(url, { method: "DELETE" });
+  await fetchOrThrow(url, { method: "DELETE" });
 }
 
 export async function getDocumentDownloadUrl(pdfName: string): Promise<string> {
