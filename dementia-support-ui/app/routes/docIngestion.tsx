@@ -37,18 +37,13 @@ import {
   type UnsupportedQuery,
 } from "~/api/unsupportedQueriesClient";
 
-const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
-const ACCEPTED_EXTENSIONS = [".pdf", ".txt", ".doc", ".docx", ".md"];
+const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024;
+const ACCEPTED_EXTENSIONS = [".pdf"];
 const SUCCESS_ALERT_TTL_MS = 10000;
 const INITIAL_PHI_GROUP_EXAMPLE_COUNT = 5;
 const UNSUPPORTED_QUERY_PREVIEW_LENGTH = 160;
 const ACCEPTED_MIME_TYPES = new Set([
   "application/pdf",
-  "text/plain",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "text/markdown",
-  "text/x-markdown",
 ]);
 
 type SortDirection = "asc" | "desc";
@@ -73,6 +68,7 @@ type PhiGroup = {
 
 type DocIngestionTab = "document-ingestion" | "unsupported-queries";
 type UnsupportedQuerySortDirection = "latest" | "oldest";
+type RejectedUploadAction = "cancel" | "upload-anyway" | null;
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -105,10 +101,10 @@ function validateFile(file: File) {
     !ACCEPTED_EXTENSIONS.includes(extension) &&
     !ACCEPTED_MIME_TYPES.has(file.type)
   ) {
-    return "Unsupported file type. Allowed: pdf, txt, doc, docx, md.";
+    return "Unsupported file type. Allowed: pdf.";
   }
   if (file.size > MAX_UPLOAD_SIZE_BYTES) {
-    return "File is too large. Maximum size is 25 MB.";
+    return "File is too large. Maximum size is 5 MB.";
   }
   return null;
 }
@@ -266,8 +262,8 @@ export default function DocIngestion() {
     Record<string, number>
   >({});
   const [isUploading, setIsUploading] = useState(false);
-  const [isResolvingRejectedUpload, setIsResolvingRejectedUpload] =
-    useState(false);
+  const [resolvingRejectedUploadAction, setResolvingRejectedUploadAction] =
+    useState<RejectedUploadAction>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [pendingDeleteKey, setPendingDeleteKey] = useState<string | null>(null);
@@ -540,10 +536,13 @@ export default function DocIngestion() {
   }
 
   async function handleCancelRejectedUpload() {
-    if (!uploadDecision?.response.quarantineKey || isResolvingRejectedUpload)
+    if (
+      !uploadDecision?.response.quarantineKey ||
+      resolvingRejectedUploadAction !== null
+    )
       return;
 
-    setIsResolvingRejectedUpload(true);
+    setResolvingRejectedUploadAction("cancel");
     setUploadError(null);
     try {
       await cancelDocumentUpload(uploadDecision.response.quarantineKey);
@@ -560,7 +559,7 @@ export default function DocIngestion() {
         error instanceof Error ? error.message : "Cancel upload failed.";
       setUploadError(message);
     } finally {
-      setIsResolvingRejectedUpload(false);
+      setResolvingRejectedUploadAction(null);
     }
   }
 
@@ -568,12 +567,12 @@ export default function DocIngestion() {
     if (
       !uploadDecision?.response.uploadId ||
       !uploadDecision.response.quarantineKey ||
-      isResolvingRejectedUpload
+      resolvingRejectedUploadAction !== null
     ) {
       return;
     }
 
-    setIsResolvingRejectedUpload(true);
+    setResolvingRejectedUploadAction("upload-anyway");
     setUploadError(null);
     try {
       const normalizedSourceUrl = sourceUrl.trim() || undefined;
@@ -596,7 +595,7 @@ export default function DocIngestion() {
         error instanceof Error ? error.message : "Upload anyway failed.";
       setUploadError(message);
     } finally {
-      setIsResolvingRejectedUpload(false);
+      setResolvingRejectedUploadAction(null);
     }
   }
 
@@ -733,9 +732,13 @@ export default function DocIngestion() {
           <Group justify="space-between" align="flex-end">
             <Stack gap={6}>
               <Text size="sm" c="dimmed">
-                AWS RAG Document Manager
+                Knowledge Base Management
               </Text>
-              <Title order={1}>Upload and manage ingestion documents</Title>
+              <Title order={1}>
+                {activeTab === "unsupported-queries"
+                  ? "Review unsupported queries"
+                  : "Upload and manage knowledge base documents"}
+              </Title>
             </Stack>
             <Button component={Link} to="/" variant="light">
               Back to Chat
@@ -749,7 +752,7 @@ export default function DocIngestion() {
             }
           >
             <Tabs.List>
-              <Tabs.Tab value="document-ingestion">Document Ingestion</Tabs.Tab>
+              <Tabs.Tab value="document-ingestion">Manage Documents</Tabs.Tab>
               <Tabs.Tab value="unsupported-queries">
                 Unsupported Queries
               </Tabs.Tab>
@@ -760,7 +763,7 @@ export default function DocIngestion() {
                 <Paper className="chat-card" p="lg" radius="lg" shadow="md">
                   <Stack gap="md">
                     <Group justify="space-between">
-                      <Text fw={600}>Upload Document</Text>
+                      <Text fw={600}>Upload a document</Text>
                     </Group>
                     <Paper
                       className="upload-dropzone"
@@ -776,7 +779,7 @@ export default function DocIngestion() {
                       <Stack gap="sm" align="center">
                         <Text fw={600}>Drag and drop a file here</Text>
                         <Text size="sm" c="dimmed">
-                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 25
+                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 5
                           MB)
                         </Text>
                         <input
@@ -1090,16 +1093,25 @@ export default function DocIngestion() {
                             <Button
                               variant="default"
                               onClick={() => void handleCancelRejectedUpload()}
-                              loading={isResolvingRejectedUpload}
-                              disabled={isResolvingRejectedUpload}
+                              loading={
+                                resolvingRejectedUploadAction === "cancel"
+                              }
+                              disabled={
+                                resolvingRejectedUploadAction !== null
+                              }
                             >
                               Cancel
                             </Button>
                             <Button
                               color="yellow"
                               onClick={() => void handleUploadAnyway()}
-                              loading={isResolvingRejectedUpload}
-                              disabled={isResolvingRejectedUpload}
+                              loading={
+                                resolvingRejectedUploadAction ===
+                                "upload-anyway"
+                              }
+                              disabled={
+                                resolvingRejectedUploadAction !== null
+                              }
                             >
                               Upload anyway
                             </Button>
@@ -1113,7 +1125,7 @@ export default function DocIngestion() {
                 <Paper className="chat-card" p="lg" radius="lg" shadow="md">
                   <Stack gap="md">
                     <Group justify="space-between" align="center">
-                      <Text fw={600}>S3 Documents</Text>
+                      <Text fw={600}>Knowledge Base Documents</Text>
                       <Button
                         variant="default"
                         onClick={() => void loadDocuments()}
@@ -1177,134 +1189,142 @@ export default function DocIngestion() {
                         No documents found for this filter.
                       </Text>
                     ) : (
-                      <Table striped highlightOnHover withTableBorder>
-                        <Table.Thead>
-                          <Table.Tr>
-                            <Table.Th>
-                              <UnstyledButton
-                                onClick={() => handleDocumentSort("filename")}
-                                style={{
-                                  color: "inherit",
-                                  font: "inherit",
-                                  fontWeight: "inherit",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Filename{getDocumentSortIndicator("filename")}
-                              </UnstyledButton>
-                            </Table.Th>
-                            <Table.Th>
-                              <UnstyledButton
-                                onClick={() => handleDocumentSort("size")}
-                                style={{
-                                  color: "inherit",
-                                  font: "inherit",
-                                  fontWeight: "inherit",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Size{getDocumentSortIndicator("size")}
-                              </UnstyledButton>
-                            </Table.Th>
-                            <Table.Th>
-                              <UnstyledButton
-                                onClick={() =>
-                                  handleDocumentSort("lastModified")
-                                }
-                                style={{
-                                  color: "inherit",
-                                  font: "inherit",
-                                  fontWeight: "inherit",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Last Modified
-                                {getDocumentSortIndicator("lastModified")}
-                              </UnstyledButton>
-                            </Table.Th>
-                            <Table.Th>Action</Table.Th>
-                          </Table.Tr>
-                        </Table.Thead>
-                        <Table.Tbody>
-                          {filteredAndSortedDocuments.map((document) => (
-                            <Table.Tr key={document.key}>
-                              <Table.Td>{document.key}</Table.Td>
-                              <Table.Td>
-                                {formatSize(document.sizeBytes)}
-                              </Table.Td>
-                              <Table.Td>
-                                {formatDate(document.lastModified)}
-                              </Table.Td>
-                              <Table.Td>
-                                <Group gap="xs" wrap="nowrap">
-                                  {isPdfDocument(document.key) ? (
+                      <Stack gap="sm">
+                        <Group justify="space-between" align="center">
+                          <Text size="sm" c="dimmed">
+                            {filteredAndSortedDocuments.length} document
+                            {filteredAndSortedDocuments.length === 1 ? "" : "s"}
+                          </Text>
+                        </Group>
+                        <Table striped highlightOnHover withTableBorder>
+                          <Table.Thead>
+                            <Table.Tr>
+                              <Table.Th>
+                                <UnstyledButton
+                                  onClick={() => handleDocumentSort("filename")}
+                                  style={{
+                                    color: "inherit",
+                                    font: "inherit",
+                                    fontWeight: "inherit",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Filename{getDocumentSortIndicator("filename")}
+                                </UnstyledButton>
+                              </Table.Th>
+                              <Table.Th>
+                                <UnstyledButton
+                                  onClick={() => handleDocumentSort("size")}
+                                  style={{
+                                    color: "inherit",
+                                    font: "inherit",
+                                    fontWeight: "inherit",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Size{getDocumentSortIndicator("size")}
+                                </UnstyledButton>
+                              </Table.Th>
+                              <Table.Th>
+                                <UnstyledButton
+                                  onClick={() =>
+                                    handleDocumentSort("lastModified")
+                                  }
+                                  style={{
+                                    color: "inherit",
+                                    font: "inherit",
+                                    fontWeight: "inherit",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Last Modified
+                                  {getDocumentSortIndicator("lastModified")}
+                                </UnstyledButton>
+                              </Table.Th>
+                              <Table.Th>Actions</Table.Th>
+                            </Table.Tr>
+                          </Table.Thead>
+                          <Table.Tbody>
+                            {filteredAndSortedDocuments.map((document) => (
+                              <Table.Tr key={document.key}>
+                                <Table.Td>{document.key}</Table.Td>
+                                <Table.Td>
+                                  {formatSize(document.sizeBytes)}
+                                </Table.Td>
+                                <Table.Td>
+                                  {formatDate(document.lastModified)}
+                                </Table.Td>
+                                <Table.Td>
+                                  <Group gap="xs" wrap="nowrap">
+                                    {isPdfDocument(document.key) ? (
+                                      <Button
+                                        variant="light"
+                                        size="xs"
+                                        onClick={() =>
+                                          void handlePreviewDocument(document.key)
+                                        }
+                                        loading={
+                                          isPreviewLoading &&
+                                          previewDocumentKey === document.key
+                                        }
+                                        disabled={
+                                          isUploading ||
+                                          pendingDownloadKey !== null ||
+                                          (isPreviewLoading &&
+                                            previewDocumentKey !== document.key)
+                                        }
+                                      >
+                                        Preview
+                                      </Button>
+                                    ) : null}
                                     <Button
+                                      variant="default"
+                                      size="xs"
+                                      onClick={() =>
+                                        void handleDownloadDocument(document.key)
+                                      }
+                                      loading={
+                                        pendingDownloadKey === document.key
+                                      }
+                                      disabled={
+                                        (pendingDownloadKey !== null &&
+                                          pendingDownloadKey !== document.key) ||
+                                        isUploading
+                                      }
+                                    >
+                                      Download
+                                    </Button>
+                                    <Button
+                                      color="red"
                                       variant="light"
                                       size="xs"
                                       onClick={() =>
-                                        void handlePreviewDocument(document.key)
-                                      }
-                                      loading={
-                                        isPreviewLoading &&
-                                        previewDocumentKey === document.key
+                                        openDeleteModal(document.key)
                                       }
                                       disabled={
+                                        isDeleting ||
                                         isUploading ||
-                                        pendingDownloadKey !== null ||
-                                        (isPreviewLoading &&
-                                          previewDocumentKey !== document.key)
+                                        pendingDownloadKey !== null
                                       }
                                     >
-                                      Preview
+                                      Delete
                                     </Button>
-                                  ) : null}
-                                  <Button
-                                    variant="default"
-                                    size="xs"
-                                    onClick={() =>
-                                      void handleDownloadDocument(document.key)
-                                    }
-                                    loading={
-                                      pendingDownloadKey === document.key
-                                    }
-                                    disabled={
-                                      (pendingDownloadKey !== null &&
-                                        pendingDownloadKey !== document.key) ||
-                                      isUploading
-                                    }
-                                  >
-                                    Download
-                                  </Button>
-                                  <Button
-                                    color="red"
-                                    variant="light"
-                                    size="xs"
-                                    onClick={() =>
-                                      openDeleteModal(document.key)
-                                    }
-                                    disabled={
-                                      isDeleting ||
-                                      isUploading ||
-                                      pendingDownloadKey !== null
-                                    }
-                                  >
-                                    Delete
-                                  </Button>
-                                </Group>
-                              </Table.Td>
-                            </Table.Tr>
-                          ))}
-                        </Table.Tbody>
-                      </Table>
+                                  </Group>
+                                </Table.Td>
+                              </Table.Tr>
+                            ))}
+                          </Table.Tbody>
+                        </Table>
+                      </Stack>
                     )}
                   </Stack>
                 </Paper>
@@ -1395,7 +1415,7 @@ export default function DocIngestion() {
                                   cursor: "pointer",
                                 }}
                               >
-                                Timestamp{" "}
+                                Date{" "}
                                 {unsupportedQuerySortDirection === "latest"
                                   ? "▼"
                                   : "▲"}
