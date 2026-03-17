@@ -11,7 +11,7 @@ REGION = "us-east-1"
 
 MAX_WORKERS = 10   # safe concurrency for Lambda testing
 
-LOG_FILE = "log2.txt"
+LOG_FILE = "log3.txt"
 
 # ---------------- LOGGING SETUP ---------------- #
 logging.basicConfig(
@@ -71,7 +71,7 @@ def test_prompt(test, index):
 
     payload = {
         "pathParameters": {"sessionID": unique_session_id},
-        "body": json.dumps({"inputText": prompt})
+        "body": json.dumps(prompt)
     }
 
     try:
