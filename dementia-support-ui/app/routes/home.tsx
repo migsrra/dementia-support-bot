@@ -1,5 +1,6 @@
 import type { Route } from "./+types/home";
 import {
+  Alert,
   Anchor,
   Box,
   Button,
@@ -77,7 +78,7 @@ const seedMessages: ChatMessage[] = [
   {
     id: 1,
     role: "assistant",
-    text: "How can I help you today?",
+    text: "Hi, I’m your dementia caregiving support chatbot. I’m here to answer questions and provide guidance related to dementia care.",
   },
 ];
 
@@ -229,7 +230,7 @@ export default function Home() {
         {
           id: nextMessageId++,
           role: "assistant",
-          text: "How can I help you today?",
+          text: "Hi, I’m your dementia caregiving support chatbot. I’m here to answer questions and provide guidance related to dementia care.",
         },
       ],
     };
@@ -369,7 +370,7 @@ export default function Home() {
                 <Title order={1}>Calm, guided chat for daily care</Title>
               </Stack>
               <Button component={Link} to="/docIngestion" variant="light">
-                Manage Documents
+                Physician Sign In
               </Button>
             </Group>
             <Paper
@@ -464,6 +465,13 @@ export default function Home() {
                 </Group>
               </form>
             </Paper>
+            <Alert color="orange" variant="light" title="Disclaimer">
+              Disclaimer: This tool provides general information only and is not
+              a substitute for professional medical advice, diagnosis, or
+              treatment. Always consult a qualified healthcare provider for
+              medical concerns. As an AI system, this chatbot may generate
+              incorrect or incomplete information.
+            </Alert>
           </Stack>
         </div>
       </Container>

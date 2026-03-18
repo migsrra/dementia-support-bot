@@ -7,6 +7,7 @@ import {
   Container,
   Group,
   Modal,
+  PasswordInput,
   UnstyledButton,
   Paper,
   Progress,
@@ -43,6 +44,10 @@ const SUCCESS_ALERT_TTL_MS = 10000;
 const INITIAL_PHI_GROUP_EXAMPLE_COUNT = 5;
 const UNSUPPORTED_QUERY_PREVIEW_LENGTH = 160;
 const SECONDARY_TEXT_COLOR = "gray.7";
+const DEMO_MODE = true;
+const DOC_INGESTION_AUTH_STORAGE_KEY = "doc-ingestion-demo-authenticated";
+const DEMO_DOCTOR_USERNAME = "demoUser";
+const DEMO_DOCTOR_PASSWORD = "1234";
 const ACCEPTED_MIME_TYPES = new Set([
   "application/pdf",
 ]);
@@ -244,6 +249,11 @@ function isPdfDocument(documentKey: string) {
 }
 
 export default function DocIngestion() {
+  const [isAuthResolved, setIsAuthResolved] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
   const [activeTab, setActiveTab] =
     useState<DocIngestionTab>("document-ingestion");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -301,6 +311,13 @@ export default function DocIngestion() {
     useState<UnsupportedQuerySortDirection>("latest");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  useEffect(() => {
+    const storedAuthState =
+      window.sessionStorage.getItem(DOC_INGESTION_AUTH_STORAGE_KEY) === "true";
+    setIsAuthenticated(storedAuthState);
+    setIsAuthResolved(true);
+  }, []);
+
   const loadDocuments = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
@@ -317,8 +334,9 @@ export default function DocIngestion() {
   }, []);
 
   useEffect(() => {
+    if (!isAuthResolved || !isAuthenticated) return;
     void loadDocuments();
-  }, [loadDocuments]);
+  }, [isAuthResolved, isAuthenticated, loadDocuments]);
 
   const loadUnsupportedQueries = useCallback(async () => {
     setIsUnsupportedQueriesLoading(true);
@@ -338,8 +356,9 @@ export default function DocIngestion() {
   }, []);
 
   useEffect(() => {
+    if (!isAuthResolved || !isAuthenticated) return;
     void loadUnsupportedQueries();
-  }, [loadUnsupportedQueries]);
+  }, [isAuthResolved, isAuthenticated, loadUnsupportedQueries]);
 
   useEffect(() => {
     if (!isUploading) {
@@ -726,6 +745,140 @@ export default function DocIngestion() {
     return sortDirection === "asc" ? " ▲" : " ▼";
   }
 
+  function handleLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (
+      username.trim() === DEMO_DOCTOR_USERNAME &&
+      password === DEMO_DOCTOR_PASSWORD
+    ) {
+      window.sessionStorage.setItem(DOC_INGESTION_AUTH_STORAGE_KEY, "true");
+      setIsAuthenticated(true);
+      setAuthError(null);
+      setPassword("");
+      return;
+    }
+
+    setAuthError("Incorrect username or password.");
+  }
+
+  function handleLogout() {
+    window.sessionStorage.removeItem(DOC_INGESTION_AUTH_STORAGE_KEY);
+    setIsAuthenticated(false);
+    setPassword("");
+    setAuthError(null);
+    setUploadDecision(null);
+    setUploadSuccess(null);
+    setSelectedFile(null);
+    setPreviewDocumentKey(null);
+    setPreviewDocumentUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return null;
+    });
+  }
+
+  if (!isAuthResolved) {
+    return (
+      <Box className="page">
+        <Container size="sm" py={64}>
+          <Paper className="chat-card" p="xl" radius="lg" shadow="md">
+            <Stack gap="sm" align="center">
+              <Text size="sm" c={SECONDARY_TEXT_COLOR}>
+                Physician Access
+              </Text>
+              <Title order={2}>Loading secure document manager</Title>
+            </Stack>
+          </Paper>
+        </Container>
+      </Box>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <Box className="page">
+        <Container size="sm" py={64}>
+          <Stack gap="xl">
+            <Group justify="space-between" align="flex-end">
+              <Stack gap={6}>
+                <Text size="sm" c={SECONDARY_TEXT_COLOR}>
+                  {"Physician Access"}
+                </Text>
+                <Title order={1}>
+                  {"Sign-in to manage documents"}
+                </Title>
+              </Stack>
+              <Button component={Link} to="/" variant="light">
+                Back to Chat
+              </Button>
+            </Group>
+
+            <Paper className="chat-card" p="xl" radius="lg" shadow="md">
+              <form onSubmit={handleLogin}>
+                <Stack gap="md">
+                  {DEMO_MODE ? (
+                    <>
+                      <Text c={SECONDARY_TEXT_COLOR}>
+                        This is a demo-only authentication layer for the
+                        physician document management area.
+                      </Text>
+                      <Alert
+                        color="blue"
+                        variant="light"
+                        title="Demo credentials"
+                      >
+                        Username: {DEMO_DOCTOR_USERNAME}
+                        <br />
+                        Password: {DEMO_DOCTOR_PASSWORD}
+                      </Alert>
+                    </>
+                  ) : (
+                    <Text c={SECONDARY_TEXT_COLOR}>
+                      Enter your physician credentials to access document
+                      management.
+                    </Text>
+                  )}
+                  <TextInput
+                    label="Username"
+                    placeholder={
+                      DEMO_MODE ? DEMO_DOCTOR_USERNAME : "Enter username"
+                    }
+                    value={username}
+                    onChange={(event) => {
+                      setUsername(event.currentTarget.value);
+                      if (authError) setAuthError(null);
+                    }}
+                    autoComplete="username"
+                  />
+                  <PasswordInput
+                    label="Password"
+                    placeholder="Enter password"
+                    value={password}
+                    onChange={(event) => {
+                      setPassword(event.currentTarget.value);
+                      if (authError) setAuthError(null);
+                    }}
+                    autoComplete="current-password"
+                  />
+                  {authError ? (
+                    <Alert color="red" variant="light" title="Sign-in failed">
+                      {authError}
+                    </Alert>
+                  ) : null}
+                  <Button type="submit">
+                    {DEMO_MODE ? "Sign-in" : "Sign in"}
+                  </Button>
+                </Stack>
+              </form>
+            </Paper>
+          </Stack>
+        </Container>
+      </Box>
+    );
+  }
+
   return (
     <Box className="page">
       <Container size="xl" py={48}>
@@ -741,8 +894,13 @@ export default function DocIngestion() {
                   : "Upload and manage knowledge base documents"}
               </Title>
             </Stack>
-            <Button component={Link} to="/" variant="light">
-              Back to Chat
+            <Button
+              component={Link}
+              to="/"
+              variant="light"
+              onClick={handleLogout}
+            >
+              Back to Chat (log out)
             </Button>
           </Group>
 
