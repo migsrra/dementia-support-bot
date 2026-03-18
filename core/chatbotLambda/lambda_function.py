@@ -237,7 +237,7 @@ def lambda_handler(event, context):
         bedrock_runtime = session.client("bedrock-runtime")
 
         GUARDRAIL_ID = os.getenv("GUARDRAIL_ID")
-        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "18")
+        GUARDRAIL_VERSION = os.getenv("GUARDRAIL_VERSION", "20")
 
         # add tag around query to aid guardrail processing
         suffix = str(uuid.uuid4())[:8]
@@ -293,6 +293,8 @@ def lambda_handler(event, context):
             print("topics:", flagged_topics)
 
             high_priority_topic = harm_priority_topic(flagged_topics)   # harm topics prioritized
+            low_priority_topic = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
+
             if high_priority_topic:
                 if high_priority_topic == "Self_Harm_Low" or high_priority_topic == "Patient_Aggression_Low" or high_priority_topic == "Caregiver_Burnout_Low":
                     routing_mode = high_priority_topic
@@ -304,23 +306,32 @@ def lambda_handler(event, context):
                 message = "MAID_Euthanesia"
                 completion = MAID_EUTHANESIA_TEMPLATE
                 bypass_agent = True
-            elif flagged_topics:             
-                priority_topic = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
-                # print(priority_topic)
-
-                if "Dementia_Related" == priority_topic:        # only dementia_related flagged, therefore allowed
+            elif flagged_topics:   
+                if "Dementia_Related" == low_priority_topic:        # only dementia_related flagged, therefore allowed
                     routing_mode = "Allowed"
                     greeting_query = greeting_check(body_str)     # set greeting flag to guide grounding check later
-                elif "Medication_Dosing_Changes" == priority_topic or "Medical_Diagnosis_Interpretation" == priority_topic:
-                    message = priority_topic
-                    completion = MEDICAL_TEMPLATE
-                    bypass_agent = True
-                elif "Legal_High_Stakes_Financial_Execution" == priority_topic:
-                    message = priority_topic
+                elif "Medication_Dosing_Changes" == low_priority_topic or "Medical_Diagnosis_Interpretation" == low_priority_topic:
+                    # if also flagged education, verify if it is actually just educational and dementia related
+                    word_policy = assessment.get("wordPolicy", {})
+                    words = word_policy.get("customWords", [])
+                    print("custom words found:", words)
+                    
+                    if not words and "Medical_Education_Inquiry" in flagged_topics: # and "Dementia_Related" in flagged_topics:    # educational and dementia related      
+                        routing_mode = "Medical_Education_Inquiry"
+                    else:           # medical advice -> hard refusal
+                        message = low_priority_topic
+                        completion = MEDICAL_TEMPLATE
+                        bypass_agent = True
+                elif "Legal_High_Stakes_Financial_Execution" == low_priority_topic:
+                    message = low_priority_topic
                     completion = LEGAL_FINANCE_TEMPLATE
                     bypass_agent = True
-                else:
+                elif not low_priority_topic and "Medical_Education_Inquiry" in flagged_topics and "Dementia_Related" in flagged_topics:  # catch queries that are medical education and related to dementia
                     routing_mode = "Medical_Education_Inquiry"      # education question, not medical advice
+                else:
+                    message = "Non_Dementia_Related_Queries"     
+                    completion = NON_DEMENTIA_TEMPLATE
+                    bypass_agent = True
             else:
                 greeting_query = greeting_check(body_str)
                 if greeting_query:     # if the query is simply a greeting (so wouldn't trigger dementia-related), allow it
