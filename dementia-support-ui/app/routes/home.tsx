@@ -195,7 +195,7 @@ export default function Home() {
     {
       id: 1,
       sessionID: createSessionId(),
-      title: "New Conversation",
+      title: "Current Conversation",
       messages: seedMessages,
     },
   ]);
@@ -224,7 +224,7 @@ export default function Home() {
     const newConversation: Conversation = {
       id: nextConversationId++,
       sessionID: createSessionId(),
-      title: `New conversation ${nextConversationId - 1}`,
+      title: `New Conversation ${nextConversationId - 1}`,
       messages: [
         {
           id: nextMessageId++,
