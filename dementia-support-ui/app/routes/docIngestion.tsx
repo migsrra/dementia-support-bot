@@ -42,6 +42,7 @@ const ACCEPTED_EXTENSIONS = [".pdf"];
 const SUCCESS_ALERT_TTL_MS = 10000;
 const INITIAL_PHI_GROUP_EXAMPLE_COUNT = 5;
 const UNSUPPORTED_QUERY_PREVIEW_LENGTH = 160;
+const SECONDARY_TEXT_COLOR = "gray.7";
 const ACCEPTED_MIME_TYPES = new Set([
   "application/pdf",
 ]);
@@ -170,7 +171,7 @@ function formatRejectedUploadSummary(
     return (
       <>
         <strong>"{fileName}"</strong> may contain{" "}
-        <strong>Protected Health Information (PHI)</strong> and does not appear{" "}
+        <strong>Protected Health Information (PHI)</strong> and does <strong>not</strong> appear{" "}
         <strong>relevant</strong> to the dementia knowledge base. Review the
         document before adding it.
       </>
@@ -190,7 +191,7 @@ function formatRejectedUploadSummary(
   if (isNotRelevant) {
     return (
       <>
-        <strong>{fileName}</strong> does not appear <strong>relevant</strong> to
+        <strong>{fileName}</strong> does <strong>not</strong> appear <strong>relevant</strong> to
         the dementia knowledge base. Review the document before adding it.
       </>
     );
@@ -250,8 +251,8 @@ export default function DocIngestion() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
   const [documentSortField, setDocumentSortField] =
-    useState<DocumentSortField>("filename");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+    useState<DocumentSortField>("lastModified");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -731,7 +732,7 @@ export default function DocIngestion() {
         <Stack gap="xl">
           <Group justify="space-between" align="flex-end">
             <Stack gap={6}>
-              <Text size="sm" c="dimmed">
+              <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                 Knowledge Base Management
               </Text>
               <Title order={1}>
@@ -778,7 +779,7 @@ export default function DocIngestion() {
                     >
                       <Stack gap="sm" align="center">
                         <Text fw={600}>Drag and drop a file here</Text>
-                        <Text size="sm" c="dimmed">
+                        <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                           Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 5
                           MB)
                         </Text>
@@ -810,7 +811,7 @@ export default function DocIngestion() {
                           <Group justify="space-between" align="center">
                             <div>
                               <Text fw={600}>{selectedFile.name}</Text>
-                              <Text size="sm" c="dimmed">
+                              <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                                 {formatSize(selectedFile.size)}
                               </Text>
                             </div>
@@ -884,7 +885,7 @@ export default function DocIngestion() {
                                   ) : null}
                                 </Group>
                                 {acceptedPhiStatus ? (
-                                  <Text size="sm" c="dimmed">
+                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                                     {acceptedPhiStatus.detail}
                                   </Text>
                                 ) : null}
@@ -904,7 +905,7 @@ export default function DocIngestion() {
                                   ) : null}
                                 </Group>
                                 {acceptedRelevanceStatus ? (
-                                  <Text size="sm" c="dimmed">
+                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                                     {acceptedRelevanceStatus.detail}
                                   </Text>
                                 ) : null}
@@ -937,7 +938,7 @@ export default function DocIngestion() {
                                 ) : null}
                               </Group>
                               {rejectedPhiStatus ? (
-                                <Text size="sm" c="dimmed">
+                                <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                                   {rejectedPhiStatus.detail}
                                 </Text>
                               ) : null}
@@ -957,7 +958,7 @@ export default function DocIngestion() {
                                 ) : null}
                               </Group>
                               {rejectedRelevanceStatus ? (
-                                <Text size="sm" c="dimmed">
+                                <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                                   {rejectedRelevanceStatus.detail}
                                 </Text>
                               ) : null}
@@ -1003,9 +1004,17 @@ export default function DocIngestion() {
                             "possible_phi_detected_and_not_relevant" ? (
                             <Paper withBorder radius="md" p="sm">
                               <Stack gap={6}>
-                                <Text size="sm" fw={600}>
-                                  PHI Screening: Detected Categories
-                                </Text>
+                                <Stack gap={0}>
+                                  <Text size="sm" fw={600}>
+                                    PHI Screening
+                                  </Text>
+                                  <Text
+                                    size="sm"
+                                    c={SECONDARY_TEXT_COLOR}
+                                  >
+                                    Detected Categories (% = Confidence)
+                                  </Text>
+                                </Stack>
                                 {filteredPhiGroups.length ? (
                                   filteredPhiGroups.map((group) => {
                                     const visibleCount =
@@ -1022,19 +1031,34 @@ export default function DocIngestion() {
 
                                     return (
                                       <Stack key={group.key} gap={4}>
-                                        <Text size="sm" fw={600}>
-                                          {group.label} ({group.items.length})
-                                        </Text>
-                                        {visibleItems.map((entity, index) => (
-                                          <Text
-                                            key={`${group.key}-${entity.text}-${index}`}
-                                            size="sm"
-                                            pl="md"
-                                          >
-                                            - {entity.text || "Unknown"} (
-                                            {formatPhiScore(entity.score)})
+                                        <Box
+                                          component="ul"
+                                          m={0}
+                                          pl="xl"
+                                          style={{ listStyleType: "disc" }}
+                                        >
+                                          <Text component="li" size="sm" fw={600}>
+                                            {group.label} ({group.items.length})
                                           </Text>
-                                        ))}
+                                        </Box>
+                                        <Box
+                                          component="ul"
+                                          m={0}
+                                          ml="lg"
+                                          pl="1.75rem"
+                                          style={{ listStyleType: "circle" }}
+                                        >
+                                          {visibleItems.map((entity, index) => (
+                                            <Text
+                                              key={`${group.key}-${entity.text}-${index}`}
+                                              component="li"
+                                              size="sm"
+                                            >
+                                              {entity.text || "Unknown"} (
+                                              {formatPhiScore(entity.score)})
+                                            </Text>
+                                          ))}
+                                        </Box>
                                         {remainingCount > 0 ? (
                                           <Group gap="xs">
                                             <Button
@@ -1081,7 +1105,7 @@ export default function DocIngestion() {
                                     );
                                   })
                                 ) : (
-                                  <Text size="sm" c="dimmed">
+                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                                     No PHI entries above 80% confidence were
                                     found to display.
                                   </Text>
@@ -1183,15 +1207,15 @@ export default function DocIngestion() {
                     ) : null}
 
                     {isLoading ? (
-                      <Text c="dimmed">Loading documents...</Text>
+                      <Text c={SECONDARY_TEXT_COLOR}>Loading documents...</Text>
                     ) : filteredAndSortedDocuments.length === 0 ? (
-                      <Text c="dimmed">
+                      <Text c={SECONDARY_TEXT_COLOR}>
                         No documents found for this filter.
                       </Text>
                     ) : (
                       <Stack gap="sm">
                         <Group justify="space-between" align="center">
-                          <Text size="sm" c="dimmed">
+                          <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                             {filteredAndSortedDocuments.length} document
                             {filteredAndSortedDocuments.length === 1 ? "" : "s"}
                           </Text>
@@ -1337,7 +1361,7 @@ export default function DocIngestion() {
                   <Group justify="space-between" align="center">
                     <Stack gap={2}>
                       <Text fw={600}>Unsupported chatbot queries</Text>
-                      <Text size="sm" c="dimmed">
+                      <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                         Review questions the chatbot could not answer from the
                         knowledge base.
                       </Text>
@@ -1378,13 +1402,13 @@ export default function DocIngestion() {
                   ) : null}
 
                   {isUnsupportedQueriesLoading ? (
-                    <Text c="dimmed">Loading unsupported queries...</Text>
+                    <Text c={SECONDARY_TEXT_COLOR}>Loading unsupported queries...</Text>
                   ) : unsupportedQueries.length === 0 ? (
-                    <Text c="dimmed">No unsupported queries found.</Text>
+                    <Text c={SECONDARY_TEXT_COLOR}>No unsupported queries found.</Text>
                   ) : (
                     <Stack gap="sm">
                       <Group justify="space-between" align="center">
-                        <Text size="sm" c="dimmed">
+                        <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                           {unsupportedQueries.length} quer
                           {unsupportedQueries.length === 1 ? "y" : "ies"}
                         </Text>
@@ -1519,7 +1543,7 @@ export default function DocIngestion() {
               </Text>
             </object>
           ) : (
-            <Text size="sm" c="dimmed">
+            <Text size="sm" c={SECONDARY_TEXT_COLOR}>
               Loading PDF preview...
             </Text>
           )}
