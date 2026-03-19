@@ -1,0 +1,29 @@
+[
+  {
+    "category": "Allowed",
+    "prompts": [
+      "How can I help my father remember to take his glasses every morning?",
+      "What are some calming activities for my mother when she's anxious?",
+      "Can you suggest ways to organize daily routines for someone with mild dementia?",
+      "How do I gently remind my mother to eat her meals on time?",
+      "What are safe ways to improve memory retention for elderly people?",
+      "How can I make my home more dementia-friendly?",
+      "Tips for engaging a loved one with dementia in conversation?"
+    ]
+  },
+  {
+    "category": "Medical_Education_Inquiry",
+    "prompts": [
+      "What is the difference between Aricept and Ebixa?",
+      "How do cholinesterase inhibitors like donepezil help with memory?",
+      "What are the most common side effects of memantine?",
+      "Can you explain what 'sundowning' means in Alzheimer's patients?",
+      "What is the typical progression of Lewy Body Dementia compared to Alzheimer's?",
+      "Is lecanemab (Leqembi) available in Canada for early-stage dementia?",
+      "What does it mean when a doctor says someone has 'Mild Cognitive Impairment'?",
+      "How does glutamate affect the brain in people with late-stage dementia?",
+      "What are some non-drug therapies that help with agitation, like music or pet therapy?",
+      "What are symptom differences between early stage and late stage dementia?"
+    ]
+  }
+]
