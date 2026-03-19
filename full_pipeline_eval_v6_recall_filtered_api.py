@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import boto3
 import requests
 
+
 DEFAULT_REGION = os.getenv("AWS_REGION", "us-east-1")
 DEFAULT_LAMBDA_NAME = os.getenv("LAMBDA_NAME", "invokeAgentLambda")
 DEFAULT_JUDGE_MODEL_ID = os.getenv("JUDGE_MODEL_ID", "us.amazon.nova-pro-v1:0")
@@ -30,6 +31,31 @@ DEFAULT_GENERATOR_MODEL_ID = os.getenv("GENERATOR_MODEL_ID", DEFAULT_JUDGE_MODEL
 DEFAULT_INVOKE_MODE = os.getenv("INVOKE_MODE", "lambda")
 DEFAULT_INVOKE_AGENT_API_URL = os.getenv("INVOKE_AGENT_API_URL", os.getenv("VITE_INVOKE_AGENT_API_URL", ""))
 DEFAULT_API_TIMEOUT_SECONDS = int(os.getenv("API_TIMEOUT_SECONDS", "60"))
+
+
+MAID_EUTHANESIA_TEMPLATE = "I'm not able to respond to this request, please consult your physician.\n\nI am here to help with general dementia caregiving strategies, tips for daily routines, or behavioural support.\n\nWould you like guidance on any of those topics?"
+PROMPT_ATTACK_TEMPLATE = "I’m here to support questions specifically related to dementia caregiving. I’m not able to provide guidance outside of that scope.\n\nIf you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.\n\nIs there a specific caregiving topic you’d like guidance on?"
+NON_DEMENTIA_TEMPLATE = "I’m here to support questions specifically related to dementia caregiving. I’m not able to provide guidance outside of that scope.\n\nIf you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.\n\nIs there a specific caregiving topic you’d like guidance on?"
+SELF_HARM_TEMPLATE = "I am very concerned about your safety. Please know that you are not alone, and help is available right now.\n\nPlease call or text 9-8-8 (the Canadian Suicide Crisis Helpline) to speak with someone who can support you.\n\nIf you are in immediate danger, please call 9-1-1 or go to the nearest emergency room.\n\nRemember that your life is important, and there is support for you through this difficult time."
+PATIENT_AGGRESSION_TEMPLATE = "Your physical safety is the first priority. If you are in immediate danger, please call 9-1-1 right away.\n\nIf it is safe to do so, give yourself space by moving to another room. Do not argue with the patient as they cannot be reasoned with at the moment.\n\nRemove triggers to ensure there are no dangerous objects within their reach.\n\nOnce you are safe, please contact your doctor or a local crisis team to discuss these behavioral changes."
+CAREGIVER_BURNOUT_TEMPLATE = "It sounds like you are at a breaking point, and I want to make sure both you and your loved one stay safe.\n\nEnsure the patient is in a safe place and then step away immediate for space.\n\nI encourage you to reach out to trusted people or the Alzheimer Society of Canada at 1-800-616-8816 or emailing at info@alzheimer.ca for immediate support.\n\nCaring for someone with dementia is incredibly demanding, and reaching out for help right now is the right thing to do to prevent a crisis."
+MEDICAL_TEMPLATE = "I'm sorry but I cannot provide medical diagnoses, interpret test results, or give advice on changing medications.\n\nThese decisions require a clinical assessment by a healthcare professional who knows your specific situation.\n\nPlease contact your family physician for more information. If this is a medical emergency, please call 9-1-1 immediately.\n\nIf you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help."
+LEGAL_FINANCE_TEMPLATE = "I cannot provide legal advice or assist with financial transactions and estate planning.\n\nThese matters are legally complex and require professional expertise to ensure the rights and assets of both the caregiver and the person with dementia are protected.\n\nIf you have questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.\n\nIs there a specific caregiving topic you’d like guidance on?"
+UNSUPPORTED_QUERY_TEMPLATE = "I don't have the necessary information on that subject at the moment. My knowledge base is constantly improving, so please ask me again at a later date.\n\nIf you have any other questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.\n\nIs there a specific dementia-related topic you’d like guidance on?"
+IRRELEVANT_RESPONSE_TEMPLATE = "I am unable to provide a relevant response to this query. Please try again and/or try re-phrasing your question.\n\nIf you have any other questions about caring for someone with dementia, daily routines, behavioral management, or support resources, I’d be happy to help.\n\nIs there a specific dementia-related topic you’d like guidance on?"
+
+HARDCODED_TEMPLATES = {
+    "MAID_EUTHANESIA_TEMPLATE": MAID_EUTHANESIA_TEMPLATE,
+    "PROMPT_ATTACK_TEMPLATE": PROMPT_ATTACK_TEMPLATE,
+    "NON_DEMENTIA_TEMPLATE": NON_DEMENTIA_TEMPLATE,
+    "SELF_HARM_TEMPLATE": SELF_HARM_TEMPLATE,
+    "PATIENT_AGGRESSION_TEMPLATE": PATIENT_AGGRESSION_TEMPLATE,
+    "CAREGIVER_BURNOUT_TEMPLATE": CAREGIVER_BURNOUT_TEMPLATE,
+    "MEDICAL_TEMPLATE": MEDICAL_TEMPLATE,
+    "LEGAL_FINANCE_TEMPLATE": LEGAL_FINANCE_TEMPLATE,
+    "UNSUPPORTED_QUERY_TEMPLATE": UNSUPPORTED_QUERY_TEMPLATE,
+    "IRRELEVANT_RESPONSE_TEMPLATE": IRRELEVANT_RESPONSE_TEMPLATE,
+}
 
 
 @dataclass
@@ -87,7 +113,6 @@ class JudgedResult:
     error: str = ""
 
 
-
 def utc_now_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -118,6 +143,27 @@ def normalize_text(s: Any) -> str:
     if isinstance(s, str):
         return s.strip()
     return json.dumps(s, ensure_ascii=False)
+
+
+def normalize_template_text(text: str) -> str:
+    s = normalize_text(text)
+    s = s.replace("\u2019", "'").replace("’", "'").replace("“", '"').replace("”", '"')
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
+def detect_hardcoded_template(answer: str) -> Tuple[Optional[str], List[str]]:
+    normalized_answer = normalize_template_text(answer)
+    if not normalized_answer:
+        return None, []
+    matches: List[str] = []
+    for name, template in HARDCODED_TEMPLATES.items():
+        normalized_template = normalize_template_text(template)
+        if normalized_answer == normalized_template or normalized_answer.startswith(normalized_template) or normalized_template in normalized_answer:
+            matches.append(name)
+    if not matches:
+        return None, []
+    return matches[0], matches
 
 
 def join_url(base: str, path: str) -> str:
@@ -275,6 +321,7 @@ def extract_retrieved_source_docs(result_body: Dict[str, Any]) -> List[str]:
                 if b:
                     docs.append(b)
 
+    # Attribution references
     attribution = result_body.get("attribution")
     if isinstance(attribution, dict):
         citations = attribution.get("citations", [])
@@ -770,7 +817,6 @@ Return JSON exactly in this form:
 }}
 """.strip()
 
-
 def build_lambda_payload(question: str, session_id: str) -> Dict[str, Any]:
     return {
         "pathParameters": {"sessionID": session_id},
@@ -821,6 +867,13 @@ def invoke_single_question(
             body = {"raw_body_text": normalize_text(body)}
 
         answer, context_raw, context_chunks = extract_pipeline_fields(body)
+        matched_template, matched_templates = detect_hardcoded_template(answer)
+        if matched_template:
+            body["__matched_template__"] = matched_template
+            body["__matched_templates__"] = matched_templates
+            body["__response_origin__"] = "hardcoded_template"
+        elif "__response_origin__" not in body:
+            body["__response_origin__"] = "non_template"
         retrieved_source_docs = extract_retrieved_source_docs(body)
 
         if not context_chunks and kb_id and fallback_retrieve_top_k > 0:
@@ -1162,12 +1215,14 @@ def write_manual_review_templates(
                 "",
             ])
 
+
 def compute_summary(
     judged_results: List[JudgedResult],
     pipeline_results_by_id: Optional[Dict[str, PipelineResult]] = None,
     exclude_fallback_from_scores: bool = False,
     exclude_medical_refusal_from_scores: bool = False,
     exclude_grounding_blocked_from_scores: bool = False,
+    exclude_hardcoded_template_from_scores: bool = False,
 ) -> Dict[str, Any]:
     fallback_phrase = "i don't have the necessary information on that subject at the moment"
 
@@ -1185,7 +1240,10 @@ def compute_summary(
             return True
         if exclude_medical_refusal_from_scores and msg == "Medical_Diagnosis_Interpretation":
             return True
+        matched_template = normalize_text(body.get("__matched_template__", ""))
         if exclude_grounding_blocked_from_scores and grounding_action == "BLOCKED":
+            return True
+        if exclude_hardcoded_template_from_scores and matched_template:
             return True
         return False
 
@@ -1207,6 +1265,14 @@ def compute_summary(
         "n_errors": len([r for r in judged_results if r.error]),
         "n_scored_for_r2_r5": len(scored),
         "excluded_from_r2_r5": len(usable) - len(scored),
+        "n_hardcoded_template_responses": (
+            sum(
+                1
+                for r in usable
+                if normalize_text(((pipeline_results_by_id.get(r.id).raw_body if pipeline_results_by_id and pipeline_results_by_id.get(r.id) else {}) or {}).get("__matched_template__", ""))
+            )
+            if pipeline_results_by_id else 0
+        ),
         "R1_latency": {
             "threshold_seconds": DEFAULT_LATENCY_SLO_SECONDS,
             "avg_ms": statistics.mean(latencies) if latencies else None,
@@ -1259,7 +1325,6 @@ def compute_summary(
             ),
         },
     }
-
 
 def run_prechecks(
     clients: AwsEvalClients,
@@ -1400,6 +1465,7 @@ def main() -> None:
     parser.add_argument("--exclude-fallback-from-scores", action="store_true", help="Exclude fallback responses from R2-R5 and quality scoring. R1 latency still uses all successful responses.")
     parser.add_argument("--exclude-medical-refusal-from-scores", action="store_true", help="Exclude medical-refusal responses from R2-R5 and quality scoring.")
     parser.add_argument("--exclude-grounding-blocked-from-scores", action="store_true", help="Exclude grounding-blocked responses from R2-R5 and quality scoring.")
+    parser.add_argument("--exclude-hardcoded-template-from-scores", action="store_true", help="Exclude known hardcoded template responses from R2-R5 and quality scoring.")
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset)
@@ -1538,16 +1604,19 @@ def main() -> None:
         exclude_fallback_from_scores=args.exclude_fallback_from_scores,
         exclude_medical_refusal_from_scores=args.exclude_medical_refusal_from_scores,
         exclude_grounding_blocked_from_scores=args.exclude_grounding_blocked_from_scores,
+        exclude_hardcoded_template_from_scores=args.exclude_hardcoded_template_from_scores,
     )
     pipeline_outcomes = {
         "allowed_count": 0,
         "medical_refusal_count": 0,
         "grounding_blocked_count": 0,
         "fallback_response_count": 0,
+        "hardcoded_template_count": 0,
         "with_context_count": 0,
         "kb_retrieve_fallback_context_count": 0,
         "pipeline_context_count": 0,
         "no_context_count": 0,
+        "hardcoded_template_breakdown": {},
     }
     fallback_phrase = "i don't have the necessary information on that subject at the moment"
     for pr in pipeline_results_by_id.values():
@@ -1561,6 +1630,10 @@ def main() -> None:
             pipeline_outcomes["grounding_blocked_count"] += 1
         if fallback_phrase in normalize_text(pr.answer).lower():
             pipeline_outcomes["fallback_response_count"] += 1
+        matched_template = normalize_text(body.get("__matched_template__", ""))
+        if matched_template:
+            pipeline_outcomes["hardcoded_template_count"] += 1
+            pipeline_outcomes["hardcoded_template_breakdown"][matched_template] = pipeline_outcomes["hardcoded_template_breakdown"].get(matched_template, 0) + 1
         if pr.context_chunks:
             pipeline_outcomes["with_context_count"] += 1
         if normalize_text(body.get("__context_source__", "")) == "kb_retrieve_fallback":
@@ -1573,7 +1646,8 @@ def main() -> None:
         "exclude_fallback_from_scores": args.exclude_fallback_from_scores,
         "exclude_medical_refusal_from_scores": args.exclude_medical_refusal_from_scores,
         "exclude_grounding_blocked_from_scores": args.exclude_grounding_blocked_from_scores,
-        "note": "R2, R3, R4, R5 and quality can be restricted to non-fallback / non-refusal / non-grounding-blocked responses when the corresponding flags are enabled. R1 latency always uses all successful responses."
+        "exclude_hardcoded_template_from_scores": args.exclude_hardcoded_template_from_scores,
+        "note": "R2, R3, R4, R5 and quality can be restricted to non-fallback / non-refusal / non-grounding-blocked / non-hardcoded-template responses when the corresponding flags are enabled. R1 latency always uses all successful responses."
     }
 
     if args.include_cloudwatch:
