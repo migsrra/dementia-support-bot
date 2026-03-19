@@ -110,6 +110,10 @@ output_checked_topics = [
     "Caregiver_Burnout_Low",
     "Medical_Education_Inquiry",
     "Caregiver_Burnout_High",
+    "Medication_Dosing_Changes",
+    "Medical_Diagnosis_Interpretation",
+    "Legal_High_Stakes_Financial_Execution",
+    "Dementia_Related"
 ]
 
 greeting_words = ["hi", "hello", "hey", "good morning", "good afternoon", "greetings"]
@@ -441,7 +445,7 @@ def lambda_handler(event, context):
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
 
-                if routing_mode in output_checked_topics and (send_to_db or (not clean_context and not greeting_query)):       # if did not find references for an allowed/low risk topic
+                if clean_context and routing_mode in output_checked_topics and (send_to_db or not greeting_query):       # if did not find references for an allowed/low risk topic
                     print("Grounding failed. Forwarding to physician")
                     completion = UNSUPPORTED_QUERY_TEMPLATE
                     send_to_db = True
