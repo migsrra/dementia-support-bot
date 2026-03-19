@@ -105,14 +105,14 @@ non_harm_priority_order = [
 
 output_checked_topics = [
     "Allowed",
-    "Self_Harm_Low",
-    "Patient_Aggression_Low",
-    "Caregiver_Burnout_Low",
+    # "Self_Harm_Low",
+    # "Patient_Aggression_Low",
+    # "Caregiver_Burnout_Low",
     "Medical_Education_Inquiry",
-    "Caregiver_Burnout_High",
-    "Medication_Dosing_Changes",
-    "Medical_Diagnosis_Interpretation",
-    "Legal_High_Stakes_Financial_Execution",
+    # "Caregiver_Burnout_High",
+    # "Medication_Dosing_Changes",
+    # "Medical_Diagnosis_Interpretation",
+    # "Legal_High_Stakes_Financial_Execution",
     "Dementia_Related"
 ]
 
@@ -394,7 +394,7 @@ def lambda_handler(event, context):
                     print("DEBUG CONTEXT", clean_context)       # would only collect references if allowed/low risk topic
 
                 # Grounding and Relevance check
-                if clean_context and routing_mode in output_checked_topics and not greeting_query:         # if allowed or low risk topic and not a greeting (normal query)
+                if clean_context and routing_mode in output_checked_topics and not greeting_query:         # if allowed and not a greeting (normal query)
                     try:
                         guardrail_check = bedrock_runtime.apply_guardrail(
                             guardrailIdentifier=GUARDRAIL_ID,
@@ -451,7 +451,7 @@ def lambda_handler(event, context):
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
 
-                if clean_context and routing_mode in output_checked_topics and send_to_db and not greeting_query:       # if did not find references for an allowed/low risk topic
+                if clean_context and routing_mode in output_checked_topics and send_to_db and not greeting_query:       # if did not find references for an allowed topic
                     print("Grounding failed. Forwarding to physician")
                     completion = UNSUPPORTED_QUERY_TEMPLATE
                     send_to_db = True
@@ -479,6 +479,11 @@ def lambda_handler(event, context):
                 if attribution_citations:
                     attribution = {"citations": attribution_citations}
 
+                # if NO context is found, we are trusting the agent to respond accordingly
+                # reason #1: harm categories should not seek advice from the knowledge base, so they wouldn't get context in the first place. the agent responds itself reliably
+                # reason #2: for guardrail flags that are in output_checked_topics but didn't find context, the agent reliably says that it doesn't know enough?
+                # reason #3: often guardrail flags are wrong, so if incorrectly flagged as output_checked_topics but didn't find context, agent understands thats ok but lambda code can't handle that
+            
             except Exception as e:
                 logger.error(f"Failed to invoke agent: {e}")
                 return _error_response(500, "Failed to invoke Bedrock Agent")
