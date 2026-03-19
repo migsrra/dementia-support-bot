@@ -198,6 +198,7 @@ def lambda_handler(event, context):
         path_params = event.get("pathParameters") or {}
         session_id = path_params.get("sessionID") if isinstance(path_params, dict) else None
         completion = ""
+        orig_response = ""
         attribution = None
 
         body = event.get("body")
@@ -310,6 +311,10 @@ def lambda_handler(event, context):
         print(f"routing mode: {routing_mode}")
         selected_agent_id, selected_agent_alias = _agent_for_routing_mode(routing_mode)
 
+        # Agent TESTING needs
+        clean_context = None
+        orig_response = completion     # update lower with agent response too
+
         # Start Bedrock KB ingestion job
         if not session_id:
             logger.error("sessionID not received via path parameter")
@@ -378,6 +383,7 @@ def lambda_handler(event, context):
                 # if names found and masked, remove from response as well
                 if " {NAME}" in completion:      
                     completion = completion.replace(" {NAME}", "").strip()
+                orig_response = completion      # agent TESTING, response before grounding overwrites
 
                 # Create a list of lines, strip whitespace, and use a set to unique them
                 unique_lines = list(dict.fromkeys([line.strip() for line in retrieved_context.split("\n") if line.strip()]))
@@ -445,7 +451,7 @@ def lambda_handler(event, context):
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
 
-                if clean_context and routing_mode in output_checked_topics and (send_to_db or not greeting_query):       # if did not find references for an allowed/low risk topic
+                if clean_context and routing_mode in output_checked_topics and send_to_db and not greeting_query:       # if did not find references for an allowed/low risk topic
                     print("Grounding failed. Forwarding to physician")
                     completion = UNSUPPORTED_QUERY_TEMPLATE
                     send_to_db = True
@@ -487,7 +493,9 @@ def lambda_handler(event, context):
         # response for testing, includes guardrail info for analysis
         response_body = {
             "message": message,
+            "orig_response": orig_response,
             "response": completion,
+            "retrieved_context": clean_context,
             # "routing_mode": routing_mode,
             # "non_risk_categories": non_risk_categories
             "grounding_score": grounding_score,
