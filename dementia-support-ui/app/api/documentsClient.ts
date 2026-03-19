@@ -104,9 +104,9 @@ export async function listDocuments(): Promise<DocumentItem[]> {
   const url = joinUrl(MANAGE_KBDOCS_API_BASE_URL, MANAGE_KBDOCS_LIST_PATH);
   const res = await fetchOrThrow(url, { method: "GET" });
 
-  const payload = (await res.json().catch(() => null)) as
-    | { items?: DocumentItem[] }
-    | null;
+  const payload = (await res.json().catch(() => null)) as {
+    items?: DocumentItem[];
+  } | null;
   const items = payload?.items;
 
   if (!Array.isArray(items)) {
@@ -131,19 +131,18 @@ export async function deleteDocument(key: string): Promise<void> {
   await triggerKbSync();
 }
 
-async function triggerKbSync() {
+export async function triggerKbSync() {
   assertConfigured("VITE_KB_SYNC_API_URL", KB_SYNC_API_URL);
   await fetchOrThrow(KB_SYNC_API_URL, { method: "POST" });
 }
 
 export async function uploadDocument(
   file: File,
-  options?: { sourceUrl?: string },
+  options?: { sourceUrl?: string; deferKbSync?: boolean },
 ): Promise<UploadDocumentResponse> {
   assertConfigured("VITE_UPLOAD_API_BASE_URL", UPLOAD_API_BASE_URL);
 
-  const safeName = encodeURIComponent(file.name);
-  let url = joinUrl(UPLOAD_API_BASE_URL, `${DOCS_API_UPLOAD_PATH}/${safeName}`);
+  let url = joinUrl(UPLOAD_API_BASE_URL, `${DOCS_API_UPLOAD_PATH}/`);
   const normalizedSourceUrl = options?.sourceUrl?.trim();
   if (normalizedSourceUrl) {
     const separator = url.includes("?") ? "&" : "?";
@@ -168,7 +167,7 @@ export async function uploadDocument(
     throw new Error("Upload API returned an unexpected response.");
   }
 
-  if (payload.status === "accepted") {
+  if (payload.status === "accepted" && !options?.deferKbSync) {
     await triggerKbSync();
   }
 
@@ -178,7 +177,7 @@ export async function uploadDocument(
 export async function uploadDocumentAnyway(
   uploadId: string,
   quarantineKey: string,
-  options?: { sourceUrl?: string },
+  options?: { sourceUrl?: string; deferKbSync?: boolean },
 ): Promise<void> {
   assertConfigured(
     "VITE_DOCUMENTS_UPLOAD_OVERRIDE",
@@ -205,7 +204,9 @@ export async function uploadDocumentAnyway(
     body: JSON.stringify(requestBody),
   });
 
-  await triggerKbSync();
+  if (!options?.deferKbSync) {
+    await triggerKbSync();
+  }
 }
 
 export async function cancelDocumentUpload(
@@ -222,9 +223,8 @@ export async function cancelDocumentUpload(
     `${MANAGE_KBDOCS_QUARANTINE_DELETE_PATH}/${encodedKey}`,
   );
 
-
-// Comment out for debugging
-// Remove comment -> deletes quarantined document form screening KB
+  // Comment out for debugging
+  // Remove comment -> deletes quarantined document form screening KB
 
   await fetchOrThrow(url, { method: "DELETE" });
 }

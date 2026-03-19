@@ -14,6 +14,13 @@ from pypdf import PdfReader
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+CORS_HEADERS = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "OPTIONS,POST",
+}
+
 # Configuration from environment
 AWS_PROFILE = os.getenv("AWS_PROFILE")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
@@ -69,14 +76,14 @@ def _build_session():
 def _success_response(status_code, data):
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
+        "headers": CORS_HEADERS,
         "body": json.dumps(data),
     }
 
 def _error_response(status_code, message):
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
+        "headers": CORS_HEADERS,
         "body": json.dumps({"error": message}),
     }
 
@@ -328,13 +335,13 @@ def screen_phi_and_redact(comprehend_medical_client, text: str) -> tuple[list[di
         raw_entities = response.get("Entities", [])
 
         for entity in raw_entities:
-            logger.info(
-                "Detected PHI entity: text=%r type=%s score=%s category=%s",
-                entity.get("Text"),
-                entity.get("Type"),
-                entity.get("Score"),
-                entity.get("Category"),
-            )
+            #logger.info(
+                #"Detected PHI entity: text=%r type=%s score=%s category=%s",
+                #entity.get("Text"),
+                #entity.get("Type"),
+                #entity.get("Score"),
+                #entity.get("Category"),
+            #)
             detected_entities.append(_normalize_phi_entity(entity, chunk_index))
 
         redacted_chunks.append(_redact_chunk(chunk, raw_entities))

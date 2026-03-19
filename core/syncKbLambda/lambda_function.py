@@ -52,7 +52,7 @@ def lambda_handler(event, context):
                     dataSourceId=BEDROCK_DS_ID,
                     description="Syncing knowledge on S3 changes",
                 )
-                logger.info(f"Ingestion job started: {ingestion_response.get('ingestionJobId')}")
+                logger.info(f"Ingestion job started: {ingestion_response}")
             except Exception as e:
                 logger.error(f"Failed to start ingestion job: {e}")
                 return _error_response(500, "Failed to start Bedrock ingestion job")
