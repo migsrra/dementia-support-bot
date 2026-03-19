@@ -108,7 +108,8 @@ output_checked_topics = [
     "Self_Harm_Low",
     "Patient_Aggression_Low",
     "Caregiver_Burnout_Low",
-    "Medical_Education_Inquiry"
+    "Medical_Education_Inquiry",
+    "Caregiver_Burnout_High",
 ]
 
 greeting_words = ["hi", "hello", "hey", "good morning", "good afternoon", "greetings"]
@@ -302,15 +303,6 @@ def lambda_handler(event, context):
                 safe_text = extract_masked_text(raw_text)
                 body_str = safe_text
             
-        # Setting Routing
-        session_state = {
-            "promptSessionAttributes": {
-                "routing_mode": routing_mode
-            }
-        }
-        print(f"session_state: {session_state}")
-        attribution = None
-
         print(f"routing mode: {routing_mode}")
         selected_agent_id, selected_agent_alias = _agent_for_routing_mode(routing_mode)
 
@@ -449,7 +441,7 @@ def lambda_handler(event, context):
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
 
-                if routing_mode in ["Allowed", "Medical_Education_Inquiry"] and (send_to_db or (not clean_context and not greeting_query)):       # if did not find references for an allowed/low risk topic
+                if routing_mode in output_checked_topics and (send_to_db or (not clean_context and not greeting_query)):       # if did not find references for an allowed/low risk topic
                     print("Grounding failed. Forwarding to physician")
                     completion = UNSUPPORTED_QUERY_TEMPLATE
                     send_to_db = True
