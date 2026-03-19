@@ -43,14 +43,13 @@ const ACCEPTED_EXTENSIONS = [".pdf"];
 const SUCCESS_ALERT_TTL_MS = 10000;
 const INITIAL_PHI_GROUP_EXAMPLE_COUNT = 5;
 const UNSUPPORTED_QUERY_PREVIEW_LENGTH = 160;
+const UNSUPPORTED_QUERIES_PAGE_LIMIT = 25;
 const SECONDARY_TEXT_COLOR = "gray.7";
 const DEMO_MODE = true;
 const DOC_INGESTION_AUTH_STORAGE_KEY = "doc-ingestion-demo-authenticated";
 const DEMO_DOCTOR_USERNAME = "demoUser";
 const DEMO_DOCTOR_PASSWORD = "1234";
-const ACCEPTED_MIME_TYPES = new Set([
-  "application/pdf",
-]);
+const ACCEPTED_MIME_TYPES = new Set(["application/pdf"]);
 
 type SortDirection = "asc" | "desc";
 type DocumentSortField = "filename" | "size" | "lastModified";
@@ -176,9 +175,9 @@ function formatRejectedUploadSummary(
     return (
       <>
         <strong>"{fileName}"</strong> may contain{" "}
-        <strong>Protected Health Information (PHI)</strong> and does <strong>not</strong> appear{" "}
-        <strong>relevant</strong> to the dementia knowledge base. Review the
-        document before adding it.
+        <strong>Protected Health Information (PHI)</strong> and does{" "}
+        <strong>not</strong> appear <strong>relevant</strong> to the dementia
+        knowledge base. Review the document before adding it.
       </>
     );
   }
@@ -196,8 +195,9 @@ function formatRejectedUploadSummary(
   if (isNotRelevant) {
     return (
       <>
-        <strong>{fileName}</strong> does <strong>not</strong> appear <strong>relevant</strong> to
-        the dementia knowledge base. Review the document before adding it.
+        <strong>{fileName}</strong> does <strong>not</strong> appear{" "}
+        <strong>relevant</strong> to the dementia knowledge base. Review the
+        document before adding it.
       </>
     );
   }
@@ -309,7 +309,15 @@ export default function DocIngestion() {
     useState<Record<string, boolean>>({});
   const [unsupportedQuerySortDirection, setUnsupportedQuerySortDirection] =
     useState<UnsupportedQuerySortDirection>("latest");
+  const [unsupportedQueriesPageIndex, setUnsupportedQueriesPageIndex] =
+    useState(0);
+  const [unsupportedQueriesPageTokens, setUnsupportedQueriesPageTokens] =
+    useState<string[]>([""]);
+  const [unsupportedQueriesNextToken, setUnsupportedQueriesNextToken] =
+    useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const currentUnsupportedQueriesToken =
+    unsupportedQueriesPageTokens[unsupportedQueriesPageIndex] || "";
 
   useEffect(() => {
     const storedAuthState =
@@ -338,18 +346,24 @@ export default function DocIngestion() {
     void loadDocuments();
   }, [isAuthResolved, isAuthenticated, loadDocuments]);
 
-  const loadUnsupportedQueries = useCallback(async () => {
+  const loadUnsupportedQueries = useCallback(async (pageToken?: string) => {
     setIsUnsupportedQueriesLoading(true);
     setUnsupportedQueriesError(null);
     try {
-      const items = await listUnsupportedQueries();
-      setUnsupportedQueries(items);
+      const page = await listUnsupportedQueries({
+        limit: UNSUPPORTED_QUERIES_PAGE_LIMIT,
+        nextToken: pageToken,
+      });
+      setUnsupportedQueries(page.items);
+      setUnsupportedQueriesNextToken(page.nextToken ?? null);
+      setExpandedUnsupportedQueryIds({});
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
           : "Failed to load unsupported queries.";
       setUnsupportedQueriesError(message);
+      setUnsupportedQueriesNextToken(null);
     } finally {
       setIsUnsupportedQueriesLoading(false);
     }
@@ -357,8 +371,13 @@ export default function DocIngestion() {
 
   useEffect(() => {
     if (!isAuthResolved || !isAuthenticated) return;
-    void loadUnsupportedQueries();
-  }, [isAuthResolved, isAuthenticated, loadUnsupportedQueries]);
+    void loadUnsupportedQueries(currentUnsupportedQueriesToken || undefined);
+  }, [
+    currentUnsupportedQueriesToken,
+    isAuthResolved,
+    isAuthenticated,
+    loadUnsupportedQueries,
+  ]);
 
   useEffect(() => {
     if (!isUploading) {
@@ -465,6 +484,9 @@ export default function DocIngestion() {
     });
     return items;
   }, [unsupportedQueries, unsupportedQuerySortDirection]);
+  const unsupportedQueriesPageNumber = unsupportedQueriesPageIndex + 1;
+  const hasPreviousUnsupportedQueriesPage = unsupportedQueriesPageIndex > 0;
+  const hasNextUnsupportedQueriesPage = Boolean(unsupportedQueriesNextToken);
 
   function handlePickedFile(file: File | null) {
     setUploadError(null);
@@ -709,9 +731,15 @@ export default function DocIngestion() {
     setUnsupportedDeleteError(null);
     try {
       await deleteUnsupportedQuery(query.id, { timestamp: query.timestamp });
-      setUnsupportedQueries((current) =>
-        current.filter((item) => item.id !== query.id),
-      );
+
+      if (unsupportedQueries.length === 1 && unsupportedQueriesPageIndex > 0) {
+        setUnsupportedQueriesNextToken(null);
+        setUnsupportedQueriesPageIndex((current) => Math.max(0, current - 1));
+      } else {
+        void loadUnsupportedQueries(
+          currentUnsupportedQueriesToken || undefined,
+        );
+      }
     } catch (error) {
       const message =
         error instanceof Error
@@ -721,6 +749,43 @@ export default function DocIngestion() {
     } finally {
       setPendingUnsupportedDeleteId(null);
     }
+  }
+
+  function handleUnsupportedQueriesRefresh() {
+    setUnsupportedQueriesError(null);
+    setUnsupportedDeleteError(null);
+    setUnsupportedQueriesNextToken(null);
+    setUnsupportedQueriesPageTokens([""]);
+    setUnsupportedQueriesPageIndex(0);
+
+    if (unsupportedQueriesPageIndex === 0) {
+      void loadUnsupportedQueries(undefined);
+    }
+  }
+
+  function handleUnsupportedQueriesPreviousPage() {
+    if (isUnsupportedQueriesLoading || unsupportedQueriesPageIndex === 0) {
+      return;
+    }
+
+    setUnsupportedQueriesNextToken(null);
+    setUnsupportedQueriesPageIndex((current) => Math.max(0, current - 1));
+  }
+
+  function handleUnsupportedQueriesNextPage() {
+    const nextPageToken = unsupportedQueriesNextToken;
+    if (isUnsupportedQueriesLoading || !nextPageToken) {
+      return;
+    }
+
+    const nextPageIndex = unsupportedQueriesPageIndex + 1;
+    setUnsupportedQueriesNextToken(null);
+    setUnsupportedQueriesPageTokens((current) => {
+      const updated = current.slice(0, nextPageIndex);
+      updated[nextPageIndex] = nextPageToken;
+      return updated;
+    });
+    setUnsupportedQueriesPageIndex(nextPageIndex);
   }
 
   function toggleUnsupportedQueryExpanded(queryId: string) {
@@ -770,6 +835,13 @@ export default function DocIngestion() {
     setUploadDecision(null);
     setUploadSuccess(null);
     setSelectedFile(null);
+    setUnsupportedQueries([]);
+    setUnsupportedQueriesPageIndex(0);
+    setUnsupportedQueriesPageTokens([""]);
+    setUnsupportedQueriesNextToken(null);
+    setUnsupportedQueriesError(null);
+    setUnsupportedDeleteError(null);
+    setExpandedUnsupportedQueryIds({});
     setPreviewDocumentKey(null);
     setPreviewDocumentUrl((current) => {
       if (current) {
@@ -806,9 +878,7 @@ export default function DocIngestion() {
                 <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                   {"Physician Access"}
                 </Text>
-                <Title order={1}>
-                  {"Sign-in to manage documents"}
-                </Title>
+                <Title order={1}>{"Sign-in to manage documents"}</Title>
               </Stack>
               <Button component={Link} to="/" variant="light">
                 Back to Chat
@@ -938,8 +1008,7 @@ export default function DocIngestion() {
                       <Stack gap="sm" align="center">
                         <Text fw={600}>Drag and drop a file here</Text>
                         <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 5
-                          MB)
+                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 5 MB)
                         </Text>
                         <input
                           ref={fileInputRef}
@@ -1166,10 +1235,7 @@ export default function DocIngestion() {
                                   <Text size="sm" fw={600}>
                                     PHI Screening
                                   </Text>
-                                  <Text
-                                    size="sm"
-                                    c={SECONDARY_TEXT_COLOR}
-                                  >
+                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
                                     Detected Categories (% = Confidence)
                                   </Text>
                                 </Stack>
@@ -1195,7 +1261,11 @@ export default function DocIngestion() {
                                           pl="xl"
                                           style={{ listStyleType: "disc" }}
                                         >
-                                          <Text component="li" size="sm" fw={600}>
+                                          <Text
+                                            component="li"
+                                            size="sm"
+                                            fw={600}
+                                          >
                                             {group.label} ({group.items.length})
                                           </Text>
                                         </Box>
@@ -1278,9 +1348,7 @@ export default function DocIngestion() {
                               loading={
                                 resolvingRejectedUploadAction === "cancel"
                               }
-                              disabled={
-                                resolvingRejectedUploadAction !== null
-                              }
+                              disabled={resolvingRejectedUploadAction !== null}
                             >
                               Cancel
                             </Button>
@@ -1291,9 +1359,7 @@ export default function DocIngestion() {
                                 resolvingRejectedUploadAction ===
                                 "upload-anyway"
                               }
-                              disabled={
-                                resolvingRejectedUploadAction !== null
-                              }
+                              disabled={resolvingRejectedUploadAction !== null}
                             >
                               Upload anyway
                             </Button>
@@ -1452,7 +1518,9 @@ export default function DocIngestion() {
                                         variant="light"
                                         size="xs"
                                         onClick={() =>
-                                          void handlePreviewDocument(document.key)
+                                          void handlePreviewDocument(
+                                            document.key,
+                                          )
                                         }
                                         loading={
                                           isPreviewLoading &&
@@ -1472,14 +1540,17 @@ export default function DocIngestion() {
                                       variant="default"
                                       size="xs"
                                       onClick={() =>
-                                        void handleDownloadDocument(document.key)
+                                        void handleDownloadDocument(
+                                          document.key,
+                                        )
                                       }
                                       loading={
                                         pendingDownloadKey === document.key
                                       }
                                       disabled={
                                         (pendingDownloadKey !== null &&
-                                          pendingDownloadKey !== document.key) ||
+                                          pendingDownloadKey !==
+                                            document.key) ||
                                         isUploading
                                       }
                                     >
@@ -1526,7 +1597,7 @@ export default function DocIngestion() {
                     </Stack>
                     <Button
                       variant="default"
-                      onClick={() => void loadUnsupportedQueries()}
+                      onClick={handleUnsupportedQueriesRefresh}
                       loading={isUnsupportedQueriesLoading}
                     >
                       Refresh
@@ -1560,118 +1631,161 @@ export default function DocIngestion() {
                   ) : null}
 
                   {isUnsupportedQueriesLoading ? (
-                    <Text c={SECONDARY_TEXT_COLOR}>Loading unsupported queries...</Text>
-                  ) : unsupportedQueries.length === 0 ? (
-                    <Text c={SECONDARY_TEXT_COLOR}>No unsupported queries found.</Text>
+                    <Text c={SECONDARY_TEXT_COLOR}>
+                      Loading unsupported queries...
+                    </Text>
                   ) : (
                     <Stack gap="sm">
                       <Group justify="space-between" align="center">
                         <Text size="sm" c={SECONDARY_TEXT_COLOR}>
+                          Page {unsupportedQueriesPageNumber} -{" "}
                           {unsupportedQueries.length} quer
                           {unsupportedQueries.length === 1 ? "y" : "ies"}
                         </Text>
+                        <Group gap="xs">
+                          <Button
+                            variant="default"
+                            size="xs"
+                            onClick={handleUnsupportedQueriesPreviousPage}
+                            disabled={
+                              !hasPreviousUnsupportedQueriesPage ||
+                              isUnsupportedQueriesLoading ||
+                              pendingUnsupportedDeleteId !== null
+                            }
+                          >
+                            Previous
+                          </Button>
+                          <Button
+                            variant="default"
+                            size="xs"
+                            onClick={handleUnsupportedQueriesNextPage}
+                            disabled={
+                              !hasNextUnsupportedQueriesPage ||
+                              isUnsupportedQueriesLoading ||
+                              pendingUnsupportedDeleteId !== null
+                            }
+                          >
+                            Next
+                          </Button>
+                        </Group>
                       </Group>
-                      <Table
-                        striped
-                        highlightOnHover
-                        withTableBorder
-                        style={{ tableLayout: "fixed" }}
-                      >
-                        <Table.Thead>
-                          <Table.Tr>
-                            <Table.Th style={{ width: "68%" }}>Query</Table.Th>
-                            <Table.Th style={{ width: "16%" }}>
-                              <UnstyledButton
-                                onClick={() =>
-                                  setUnsupportedQuerySortDirection((current) =>
-                                    current === "latest" ? "oldest" : "latest",
-                                  )
-                                }
-                                style={{
-                                  color: "inherit",
-                                  font: "inherit",
-                                  fontWeight: "inherit",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                Date{" "}
-                                {unsupportedQuerySortDirection === "latest"
-                                  ? "▼"
-                                  : "▲"}
-                              </UnstyledButton>
-                            </Table.Th>
-                            <Table.Th style={{ width: "16%" }}>Action</Table.Th>
-                          </Table.Tr>
-                        </Table.Thead>
-                        <Table.Tbody>
-                          {sortedUnsupportedQueries.map((query) => {
-                            const isExpanded =
-                              expandedUnsupportedQueryIds[query.id] ?? false;
-                            const isLongQuery =
-                              query.queryText.length >
-                              UNSUPPORTED_QUERY_PREVIEW_LENGTH;
-                            const visibleQueryText =
-                              isExpanded || !isLongQuery
-                                ? query.queryText
-                                : `${query.queryText.slice(0, UNSUPPORTED_QUERY_PREVIEW_LENGTH).trimEnd()}...`;
 
-                            return (
-                              <Table.Tr
-                                key={`${query.id}-${query.timestamp ?? "no-timestamp"}`}
-                              >
-                                <Table.Td>
-                                  <Stack gap={6}>
-                                    <Text
-                                      size="sm"
-                                      style={{ whiteSpace: "normal" }}
-                                    >
-                                      {visibleQueryText}
-                                    </Text>
-                                    {isLongQuery ? (
-                                      <Button
-                                        variant="subtle"
-                                        size="compact-xs"
-                                        w="fit-content"
-                                        onClick={() =>
-                                          toggleUnsupportedQueryExpanded(
-                                            query.id,
-                                          )
-                                        }
+                      {unsupportedQueries.length === 0 ? (
+                        <Text c={SECONDARY_TEXT_COLOR}>
+                          {unsupportedQueriesPageIndex === 0
+                            ? "No unsupported queries found."
+                            : "No unsupported queries on this page."}
+                        </Text>
+                      ) : (
+                        <Table
+                          striped
+                          highlightOnHover
+                          withTableBorder
+                          style={{ tableLayout: "fixed" }}
+                        >
+                          <Table.Thead>
+                            <Table.Tr>
+                              <Table.Th style={{ width: "68%" }}>
+                                Query
+                              </Table.Th>
+                              <Table.Th style={{ width: "16%" }}>
+                                <UnstyledButton
+                                  onClick={() =>
+                                    setUnsupportedQuerySortDirection(
+                                      (current) =>
+                                        current === "latest"
+                                          ? "oldest"
+                                          : "latest",
+                                    )
+                                  }
+                                  style={{
+                                    color: "inherit",
+                                    font: "inherit",
+                                    fontWeight: "inherit",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 4,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Date{" "}
+                                  {unsupportedQuerySortDirection === "latest"
+                                    ? "▼"
+                                    : "▲"}
+                                </UnstyledButton>
+                              </Table.Th>
+                              <Table.Th style={{ width: "16%" }}>
+                                Action
+                              </Table.Th>
+                            </Table.Tr>
+                          </Table.Thead>
+                          <Table.Tbody>
+                            {sortedUnsupportedQueries.map((query) => {
+                              const isExpanded =
+                                expandedUnsupportedQueryIds[query.id] ?? false;
+                              const isLongQuery =
+                                query.queryText.length >
+                                UNSUPPORTED_QUERY_PREVIEW_LENGTH;
+                              const visibleQueryText =
+                                isExpanded || !isLongQuery
+                                  ? query.queryText
+                                  : `${query.queryText.slice(0, UNSUPPORTED_QUERY_PREVIEW_LENGTH).trimEnd()}...`;
+
+                              return (
+                                <Table.Tr
+                                  key={`${query.id}-${query.timestamp ?? "no-timestamp"}`}
+                                >
+                                  <Table.Td>
+                                    <Stack gap={6}>
+                                      <Text
+                                        size="sm"
+                                        style={{ whiteSpace: "normal" }}
                                       >
-                                        Show {isExpanded ? "less" : "more"}
-                                      </Button>
-                                    ) : null}
-                                  </Stack>
-                                </Table.Td>
-                                <Table.Td style={{ width: "16%" }}>
-                                  {formatDate(query.timestamp)}
-                                </Table.Td>
-                                <Table.Td>
-                                  <Button
-                                    color="red"
-                                    variant="light"
-                                    size="xs"
-                                    onClick={() =>
-                                      void handleUnsupportedDelete(query)
-                                    }
-                                    loading={
-                                      pendingUnsupportedDeleteId === query.id
-                                    }
-                                    disabled={
-                                      pendingUnsupportedDeleteId !== null
-                                    }
-                                  >
-                                    Delete
-                                  </Button>
-                                </Table.Td>
-                              </Table.Tr>
-                            );
-                          })}
-                        </Table.Tbody>
-                      </Table>
+                                        {visibleQueryText}
+                                      </Text>
+                                      {isLongQuery ? (
+                                        <Button
+                                          variant="subtle"
+                                          size="compact-xs"
+                                          w="fit-content"
+                                          onClick={() =>
+                                            toggleUnsupportedQueryExpanded(
+                                              query.id,
+                                            )
+                                          }
+                                        >
+                                          Show {isExpanded ? "less" : "more"}
+                                        </Button>
+                                      ) : null}
+                                    </Stack>
+                                  </Table.Td>
+                                  <Table.Td style={{ width: "16%" }}>
+                                    {formatDate(query.timestamp)}
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Button
+                                      color="red"
+                                      variant="light"
+                                      size="xs"
+                                      onClick={() =>
+                                        void handleUnsupportedDelete(query)
+                                      }
+                                      loading={
+                                        pendingUnsupportedDeleteId === query.id
+                                      }
+                                      disabled={
+                                        pendingUnsupportedDeleteId !== null
+                                      }
+                                    >
+                                      Delete
+                                    </Button>
+                                  </Table.Td>
+                                </Table.Tr>
+                              );
+                            })}
+                          </Table.Tbody>
+                        </Table>
+                      )}
                     </Stack>
                   )}
                 </Stack>
@@ -1684,7 +1798,9 @@ export default function DocIngestion() {
       <Modal
         opened={Boolean(previewDocumentUrl && previewDocumentKey)}
         onClose={closePreviewModal}
-        title={previewDocumentKey ? `Preview: ${previewDocumentKey}` : "PDF Preview"}
+        title={
+          previewDocumentKey ? `Preview: ${previewDocumentKey}` : "PDF Preview"
+        }
         size="90%"
         centered
       >

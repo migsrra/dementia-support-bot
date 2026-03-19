@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -15,6 +16,8 @@ logger.setLevel(logging.INFO)
 AWS_PROFILE = os.getenv("AWS_PROFILE")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME")
+DEFAULT_PAGE_SIZE = 25
+MAX_PAGE_SIZE = 100
 
 
 def _parse_timestamp(value):
@@ -29,6 +32,62 @@ def _parse_timestamp(value):
         return datetime.fromisoformat(normalized)
     except ValueError:
         return datetime.min
+
+def _encode_next_token(last_evaluated_key):
+    if not last_evaluated_key:
+        return None
+
+    payload = json.dumps(last_evaluated_key, separators=(",", ":"), sort_keys=True)
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("utf-8")
+
+def _decode_next_token(next_token):
+    try:
+        padded_token = next_token + "=" * (-len(next_token) % 4)
+        decoded = base64.urlsafe_b64decode(padded_token.encode("utf-8")).decode("utf-8")
+        parsed = json.loads(decoded)
+    except Exception as exc:
+        raise ValueError("Query parameter 'nextToken' is invalid.") from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Query parameter 'nextToken' is invalid.")
+
+    return parsed
+
+def _parse_pagination(event):
+    query_params = {}
+    if isinstance(event, dict):
+        query_params = event.get("queryStringParameters") or {}
+
+    if not isinstance(query_params, dict):
+        return None, None, False
+
+    raw_limit = query_params.get("limit")
+    raw_next_token = query_params.get("nextToken")
+    pagination_requested = raw_limit not in (None, "") or raw_next_token not in (None, "")
+
+    if not pagination_requested:
+        return None, None, False
+
+    if raw_limit in (None, ""):
+        limit = DEFAULT_PAGE_SIZE
+    else:
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Query parameter 'limit' must be a positive integer.") from exc
+
+        if limit <= 0:
+            raise ValueError("Query parameter 'limit' must be a positive integer.")
+        if limit > MAX_PAGE_SIZE:
+            raise ValueError(f"Query parameter 'limit' cannot exceed {MAX_PAGE_SIZE}.")
+
+    exclusive_start_key = None
+    if raw_next_token not in (None, ""):
+        if not isinstance(raw_next_token, str):
+            raise ValueError("Query parameter 'nextToken' must be a string.")
+        exclusive_start_key = _decode_next_token(raw_next_token.strip())
+
+    return limit, exclusive_start_key, True
 
 def _build_session():
     logger.info("Building boto3 session")
@@ -59,6 +118,8 @@ def lambda_handler(event, context):
             logger.error("DYNAMODB_TABLE_NAME not configured")
             return _error_response(500, "Configuration details missing. DYNAMODB_TABLE_NAME is required.")
 
+        page_size, exclusive_start_key, pagination_requested = _parse_pagination(event)
+
         session = _build_session()
         table = session.resource("dynamodb").Table(DYNAMODB_TABLE_NAME)
 
@@ -66,27 +127,58 @@ def lambda_handler(event, context):
         filter_expression = Attr("deleted").not_exists() | Attr("deleted").ne(True)
 
         items = []
-        scan_kwargs = {"FilterExpression": filter_expression}
+        next_token = None
 
-        while True:
-            response = table.scan(**scan_kwargs)
-            items.extend(response.get("Items", []))
+        if pagination_requested:
+            scan_kwargs = {
+                "FilterExpression": filter_expression,
+                "Limit": page_size,
+            }
+            if exclusive_start_key:
+                scan_kwargs["ExclusiveStartKey"] = exclusive_start_key
 
-            last_evaluated_key = response.get("LastEvaluatedKey")
-            if not last_evaluated_key:
-                break
+            last_evaluated_key = None
+            while len(items) < page_size:
+                scan_kwargs["Limit"] = max(1, page_size - len(items))
+                response = table.scan(**scan_kwargs)
+                items.extend(response.get("Items", []))
 
-            scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+                last_evaluated_key = response.get("LastEvaluatedKey")
+                if not last_evaluated_key:
+                    break
+
+                scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+
+            items = items[:page_size]
+            next_token = _encode_next_token(last_evaluated_key)
+        else:
+            scan_kwargs = {"FilterExpression": filter_expression}
+
+            while True:
+                response = table.scan(**scan_kwargs)
+                items.extend(response.get("Items", []))
+
+                last_evaluated_key = response.get("LastEvaluatedKey")
+                if not last_evaluated_key:
+                    break
+
+                scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
 
         items.sort(key=lambda item: _parse_timestamp(item.get("timestamp")), reverse=True)
 
-        return _success_response(
-            200,
-            {
-                "count": len(items),
-                "items": items,
-            },
-        )
+        payload = {
+            "count": len(items),
+            "items": items,
+        }
+        if pagination_requested:
+            payload["nextToken"] = next_token
+            payload["pageSize"] = page_size
+
+        return _success_response(200, payload)
+
+    except ValueError as exc:
+        logger.warning("Invalid pagination request: %s", exc)
+        return _error_response(400, str(exc))
 
     except ClientError as exc:
         logger.error("DynamoDB client error while listing unsupported prompts: %s", exc)
