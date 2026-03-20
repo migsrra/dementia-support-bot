@@ -10,9 +10,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 LAMBDA_NAME = "invokeAgentLambda"
 REGION = "us-east-1"
 
-MAX_WORKERS = 10   # safe concurrency for Lambda testing
+MAX_WORKERS = 8   # safe concurrency for Lambda testing
 
-LOG_FILE = "log1.txt"
+INPUT_FILE = "prompts_attacks.json"
+LOG_FILE = "guardrail_log1.txt"
 
 # ---------------- LOGGING SETUP ---------------- #
 logging.basicConfig(
@@ -44,7 +45,7 @@ def compute_metrics(cm):
 
 # ---------------- LOAD PROMPTS ---------------- #
 
-with open("prompts.json") as f:
+with open(INPUT_FILE) as f:
     data = json.load(f)
 
 tests = []
