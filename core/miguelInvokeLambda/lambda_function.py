@@ -259,7 +259,7 @@ def lambda_handler(event, context):
             for filter in filters:
                 type = filter.get("type")
                 if type == "PROMPT_ATTACK":     # hard refusal, bypass agent
-                    message = "Prompt Attack"
+                    message = "Prompt_Attack"
                     completion = PROMPT_ATTACK_TEMPLATE
                     bypass_agent = True
             
