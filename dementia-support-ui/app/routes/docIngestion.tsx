@@ -26,11 +26,13 @@ import {
   deleteDocument,
   getDocumentBlob,
   listDocuments,
+  triggerKbSync,
   type UploadScreeningSummary,
   uploadDocumentAnyway,
   type UploadPhiGroup,
   type UploadRejectedResponse,
   uploadDocument,
+  type UploadDocumentResponse,
 } from "~/api/documentsClient";
 import {
   deleteUnsupportedQuery,
@@ -51,13 +53,24 @@ const DEMO_DOCTOR_USERNAME = "demoUser";
 const DEMO_DOCTOR_PASSWORD = "1234";
 const ACCEPTED_MIME_TYPES = new Set(["application/pdf"]);
 
+type FileUploadTracking = {
+  id: string; // unique identifier
+  file: File;
+  sourceUrl: string;
+  status:
+    | "pending"
+    | "uploading"
+    | "decision-pending"
+    | "approved"
+    | "rejected"
+    | "completed"
+    | "error";
+  response?: UploadDocumentResponse;
+  error?: string;
+};
+
 type SortDirection = "asc" | "desc";
 type DocumentSortField = "filename" | "size" | "lastModified";
-
-type UploadDecisionState = {
-  fileName: string;
-  response: UploadRejectedResponse;
-} | null;
 
 type UploadSuccessState = {
   title: string;
@@ -73,7 +86,6 @@ type PhiGroup = {
 
 type DocIngestionTab = "document-ingestion" | "unsupported-queries";
 type UnsupportedQuerySortDirection = "latest" | "oldest";
-type RejectedUploadAction = "cancel" | "upload-anyway" | null;
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -263,19 +275,16 @@ export default function DocIngestion() {
   const [documentSortField, setDocumentSortField] =
     useState<DocumentSortField>("lastModified");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [sourceUrl, setSourceUrl] = useState("");
+  const [uploadedFiles, setUploadedFiles] = useState<FileUploadTracking[]>([]);
+  const [uploadBatchInProgress, setUploadBatchInProgress] = useState(false);
+  const [sourceUrls, setSourceUrls] = useState<Record<string, string>>({});
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<UploadSuccessState>(null);
-  const [uploadDecision, setUploadDecision] =
-    useState<UploadDecisionState>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isResolvingReviewBatch, setIsResolvingReviewBatch] = useState(false);
   const [visiblePhiGroupCounts, setVisiblePhiGroupCounts] = useState<
     Record<string, number>
   >({});
-  const [isUploading, setIsUploading] = useState(false);
-  const [resolvingRejectedUploadAction, setResolvingRejectedUploadAction] =
-    useState<RejectedUploadAction>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [pendingDeleteKey, setPendingDeleteKey] = useState<string | null>(null);
   const [pendingDownloadKey, setPendingDownloadKey] = useState<string | null>(
@@ -380,19 +389,16 @@ export default function DocIngestion() {
   ]);
 
   useEffect(() => {
-    if (!isUploading) {
-      setUploadProgress(0);
-      return;
+    if (uploadBatchInProgress) {
+      const timer = window.setInterval(() => {
+        setUploadProgress((current) => (current >= 90 ? current : current + 8));
+      }, 140);
+
+      return () => {
+        window.clearInterval(timer);
+      };
     }
-
-    const timer = window.setInterval(() => {
-      setUploadProgress((current) => (current >= 90 ? current : current + 8));
-    }, 140);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [isUploading]);
+  }, [uploadBatchInProgress]);
 
   useEffect(() => {
     if (!uploadSuccess) return;
@@ -420,7 +426,7 @@ export default function DocIngestion() {
 
   useEffect(() => {
     setVisiblePhiGroupCounts({});
-  }, [uploadDecision]);
+  }, [uploadedFiles]);
 
   useEffect(() => {
     return () => {
@@ -429,6 +435,56 @@ export default function DocIngestion() {
       }
     };
   }, [previewDocumentUrl]);
+
+  useEffect(() => {
+    if (uploadBatchInProgress || isResolvingReviewBatch) return;
+    if (uploadedFiles.length === 0) return;
+
+    const hasPendingWork = uploadedFiles.some(
+      (file) =>
+        file.status === "pending" ||
+        file.status === "uploading" ||
+        file.status === "decision-pending",
+    );
+    if (hasPendingWork) return;
+
+    const hasAnyCompletedUpload = uploadedFiles.some(
+      (file) => file.status === "completed",
+    );
+
+    setIsResolvingReviewBatch(true);
+    void (async () => {
+      try {
+        if (hasAnyCompletedUpload) {
+          await triggerKbSync();
+        }
+        await loadDocuments();
+        if (hasAnyCompletedUpload) {
+          setUploadSuccess({
+            title: "Review complete",
+            message:
+              "All documents in this review batch have been resolved and synced.",
+          });
+        }
+        setUploadedFiles([]);
+        setSourceUrls({});
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Failed to finalize document review batch.";
+        setUploadError(message);
+      } finally {
+        setIsResolvingReviewBatch(false);
+      }
+    })();
+  }, [
+    isResolvingReviewBatch,
+    loadDocuments,
+    uploadBatchInProgress,
+    uploadedFiles,
+  ]);
 
   const filteredAndSortedDocuments = useMemo(() => {
     const filtered = documents.filter(
@@ -451,29 +507,6 @@ export default function DocIngestion() {
     });
   }, [documentSortField, documents, filterText, sortDirection]);
 
-  const filteredPhiGroups = useMemo(() => {
-    return (uploadDecision?.response.phiGroups ?? []).map((group) => ({
-      key: group.key,
-      label: group.label,
-      items: group.items,
-    })) satisfies PhiGroup[];
-  }, [uploadDecision]);
-
-  const acceptedPhiStatus = uploadSuccess?.screeningSummary
-    ? getScreeningBadge(getAcceptedPhiStatus(uploadSuccess.screeningSummary))
-    : null;
-  const acceptedRelevanceStatus = uploadSuccess?.screeningSummary
-    ? getScreeningBadge(
-        getAcceptedRelevanceStatus(uploadSuccess.screeningSummary),
-      )
-    : null;
-  const rejectedPhiStatus = uploadDecision
-    ? getScreeningBadge(getRejectedPhiStatus(uploadDecision.response))
-    : null;
-  const rejectedRelevanceStatus = uploadDecision
-    ? getScreeningBadge(getRejectedRelevanceStatus(uploadDecision.response))
-    : null;
-
   const sortedUnsupportedQueries = useMemo(() => {
     const items = [...unsupportedQueries];
     items.sort((a, b) => {
@@ -488,156 +521,226 @@ export default function DocIngestion() {
   const hasPreviousUnsupportedQueriesPage = unsupportedQueriesPageIndex > 0;
   const hasNextUnsupportedQueriesPage = Boolean(unsupportedQueriesNextToken);
 
-  function handlePickedFile(file: File | null) {
+  function handlePickedFiles(files: FileList | null) {
     setUploadError(null);
-    setUploadSuccess(null);
-    if (!file) {
-      setSelectedFile(null);
+    if (!files || files.length === 0) {
       return;
     }
-    const validationError = validateFile(file);
-    if (validationError) {
-      setSelectedFile(null);
-      setUploadError(validationError);
-      return;
+
+    const newFiles: FileUploadTracking[] = [];
+    let hasError = false;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const validationError = validateFile(file);
+      if (validationError) {
+        setUploadError(`${file.name}: ${validationError}`);
+        hasError = true;
+        continue;
+      }
+      newFiles.push({
+        id: `${file.name}-${Date.now()}-${i}`,
+        file,
+        sourceUrl: "",
+        status: "pending",
+      });
     }
-    setSelectedFile(file);
+
+    if (newFiles.length > 0) {
+      setUploadedFiles((current) => [...current, ...newFiles]);
+    }
   }
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    if (isUploading || uploadDecision) return;
-    const file = event.dataTransfer.files?.[0] ?? null;
-    handlePickedFile(file);
+    if (uploadBatchInProgress) return;
+    const files = event.dataTransfer.files ?? null;
+    handlePickedFiles(files);
   }
 
   function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
   }
 
-  async function handleUpload() {
-    if (!selectedFile || isUploading) return;
+  async function handleUploadAll() {
+    // Get files in pending status
+    const pendingFiles = uploadedFiles.filter((f) => f.status === "pending");
+    if (pendingFiles.length === 0) return;
 
-    const normalizedSourceUrl = sourceUrl.trim() || undefined;
-
-    const previousDocuments = documents;
-    const optimisticItem: DocumentItem = {
-      key: selectedFile.name,
-      sizeBytes: selectedFile.size,
-      lastModified: new Date().toISOString(),
-    };
-
+    setUploadBatchInProgress(true);
     setUploadError(null);
-    setDeleteError(null);
-    setUploadSuccess(null);
-    setUploadDecision(null);
-    setIsUploading(true);
-    setDocuments((current) => [
-      optimisticItem,
-      ...current.filter((document) => document.key !== optimisticItem.key),
-    ]);
+    setUploadProgress(0);
+
+    // Update all files to uploading status
+    setUploadedFiles((current) =>
+      current.map((f) =>
+        pendingFiles.find((pf) => pf.id === f.id)
+          ? { ...f, status: "uploading" as const }
+          : f,
+      ),
+    );
 
     try {
-      const response = await uploadDocument(selectedFile, {
-        sourceUrl: normalizedSourceUrl,
-      });
+      // Upload all files in parallel
+      const uploadPromises = pendingFiles.map((fileTracking) =>
+        uploadDocument(fileTracking.file, {
+          sourceUrl: sourceUrls[fileTracking.id],
+          deferKbSync: true,
+        })
+          .then((response) => ({
+            id: fileTracking.id,
+            response,
+            error: null,
+          }))
+          .catch((error) => ({
+            id: fileTracking.id,
+            response: undefined,
+            error: error instanceof Error ? error.message : "Upload failed",
+          })),
+      );
+
+      const results = await Promise.all(uploadPromises);
       setUploadProgress(100);
 
-      if (response.status === "accepted") {
-        await loadDocuments();
+      // Process results: separate accepted, rejected, and errors
+      const acceptedCount = results.filter(
+        (r) => r.response?.status === "accepted",
+      ).length;
+      const rejectedCount = results.filter(
+        (r) => r.response?.status === "rejected",
+      ).length;
+      const errorCount = results.filter((r) => r.error).length;
+
+      // Update file statuses based on results
+      setUploadedFiles((current) =>
+        current.map((f) => {
+          const result = results.find((r) => r.id === f.id);
+          if (!result) return f;
+
+          if (result.error) {
+            return { ...f, status: "error" as const, error: result.error };
+          }
+
+          if (result.response?.status === "accepted") {
+            return {
+              ...f,
+              status: "completed" as const,
+              response: result.response,
+            };
+          }
+
+          if (result.response?.status === "rejected") {
+            return {
+              ...f,
+              status: "decision-pending" as const,
+              response: result.response,
+            };
+          }
+
+          return f;
+        }),
+      );
+
+      // Show success message if there are accepted files
+      if (acceptedCount > 0) {
         setUploadSuccess({
-          title: "Upload complete",
-          message: `Uploaded ${selectedFile.name}`,
-          screeningSummary: response.screeningSummary,
+          title: "Files processed",
+          message: `${acceptedCount} file${acceptedCount === 1 ? "" : "s"} accepted${rejectedCount > 0 ? `, ${rejectedCount} needs review` : ""}${errorCount > 0 ? `, ${errorCount} error${errorCount === 1 ? "" : "s"}` : ""}`,
         });
-        setSelectedFile(null);
-        setSourceUrl("");
-        if (fileInputRef.current) fileInputRef.current.value = "";
-      } else {
-        setDocuments(previousDocuments);
-        setUploadDecision({
-          fileName: selectedFile.name,
-          response,
-        });
+      } else if (errorCount > 0) {
+        setUploadError(
+          `All uploads failed. ${errorCount} error${errorCount === 1 ? "" : "s"}.`,
+        );
       }
     } catch (error) {
-      setDocuments(previousDocuments);
-      const message = error instanceof Error ? error.message : "Upload failed.";
+      const message =
+        error instanceof Error ? error.message : "Upload batch failed.";
       setUploadError(message);
     } finally {
-      setIsUploading(false);
+      setUploadBatchInProgress(false);
     }
   }
 
   function openDeleteModal(key: string) {
-    if (isUploading) return;
+    if (uploadBatchInProgress) return;
     setDeleteError(null);
     setDeleteSuccess(null);
     setPendingDeleteKey(key);
     setIsDeleteModalOpen(true);
   }
 
-  async function handleCancelRejectedUpload() {
-    if (
-      !uploadDecision?.response.quarantineKey ||
-      resolvingRejectedUploadAction !== null
-    )
+  async function handleApproveFile(fileId: string) {
+    const fileTracking = uploadedFiles.find((f) => f.id === fileId);
+    if (!fileTracking?.response || fileTracking.response.status !== "rejected")
       return;
 
-    setResolvingRejectedUploadAction("cancel");
+    const response = fileTracking.response;
+    if (!response.uploadId || !response.quarantineKey) return;
+
     setUploadError(null);
+    setUploadedFiles((current) =>
+      current.map((f) =>
+        f.id === fileId ? { ...f, status: "uploading" as const } : f,
+      ),
+    );
+
     try {
-      await cancelDocumentUpload(uploadDecision.response.quarantineKey);
-      setUploadDecision(null);
-      setSelectedFile(null);
-      setSourceUrl("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      setUploadSuccess({
-        title: "Upload cancelled",
-        message: `Cancelled upload for ${uploadDecision.fileName}`,
+      await uploadDocumentAnyway(response.uploadId, response.quarantineKey, {
+        sourceUrl: sourceUrls[fileId],
+        deferKbSync: true,
       });
+      setUploadedFiles((current) =>
+        current.map((f) =>
+          f.id === fileId ? { ...f, status: "completed" as const } : f,
+        ),
+      );
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Cancel upload failed.";
+        error instanceof Error ? error.message : "Approval failed.";
       setUploadError(message);
-    } finally {
-      setResolvingRejectedUploadAction(null);
+      setUploadedFiles((current) =>
+        current.map((f) =>
+          f.id === fileId
+            ? { ...f, status: "decision-pending" as const, error: message }
+            : f,
+        ),
+      );
     }
   }
 
-  async function handleUploadAnyway() {
-    if (
-      !uploadDecision?.response.uploadId ||
-      !uploadDecision.response.quarantineKey ||
-      resolvingRejectedUploadAction !== null
-    ) {
+  async function handleRejectFile(fileId: string) {
+    const fileTracking = uploadedFiles.find((f) => f.id === fileId);
+    if (!fileTracking?.response || fileTracking.response.status !== "rejected")
       return;
-    }
 
-    setResolvingRejectedUploadAction("upload-anyway");
+    const response = fileTracking.response;
+    if (!response.quarantineKey) return;
+
     setUploadError(null);
+    setUploadedFiles((current) =>
+      current.map((f) =>
+        f.id === fileId ? { ...f, status: "uploading" as const } : f,
+      ),
+    );
+
     try {
-      const normalizedSourceUrl = sourceUrl.trim() || undefined;
-      await uploadDocumentAnyway(
-        uploadDecision.response.uploadId,
-        uploadDecision.response.quarantineKey,
-        { sourceUrl: normalizedSourceUrl },
+      await cancelDocumentUpload(response.quarantineKey);
+      setUploadedFiles((current) =>
+        current.map((f) =>
+          f.id === fileId ? { ...f, status: "rejected" as const } : f,
+        ),
       );
-      setUploadDecision(null);
-      setSelectedFile(null);
-      setSourceUrl("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      await loadDocuments();
-      setUploadSuccess({
-        title: "Upload complete",
-        message: `Uploaded ${uploadDecision.fileName}`,
-      });
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Upload anyway failed.";
+        error instanceof Error ? error.message : "Rejection failed.";
       setUploadError(message);
-    } finally {
-      setResolvingRejectedUploadAction(null);
+      setUploadedFiles((current) =>
+        current.map((f) =>
+          f.id === fileId
+            ? { ...f, status: "decision-pending" as const, error: message }
+            : f,
+        ),
+      );
     }
   }
 
@@ -832,9 +935,6 @@ export default function DocIngestion() {
     setIsAuthenticated(false);
     setPassword("");
     setAuthError(null);
-    setUploadDecision(null);
-    setUploadSuccess(null);
-    setSelectedFile(null);
     setUnsupportedQueries([]);
     setUnsupportedQueriesPageIndex(0);
     setUnsupportedQueriesPageTokens([""]);
@@ -842,6 +942,8 @@ export default function DocIngestion() {
     setUnsupportedQueriesError(null);
     setUnsupportedDeleteError(null);
     setExpandedUnsupportedQueryIds({});
+    setUploadedFiles([]);
+    setSourceUrls({});
     setPreviewDocumentKey(null);
     setPreviewDocumentUrl((current) => {
       if (current) {
@@ -1001,69 +1103,145 @@ export default function DocIngestion() {
                       onDrop={handleDrop}
                       onDragOver={handleDragOver}
                       style={{
-                        opacity: uploadDecision ? 0.6 : 1,
-                        pointerEvents: uploadDecision ? "none" : undefined,
+                        opacity: uploadBatchInProgress ? 0.6 : 1,
+                        pointerEvents: uploadBatchInProgress
+                          ? "none"
+                          : undefined,
                       }}
                     >
                       <Stack gap="sm" align="center">
-                        <Text fw={600}>Drag and drop a file here</Text>
+                        <Text fw={600}>Drag and drop files here</Text>
                         <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 5 MB)
+                          Supported: {ACCEPTED_EXTENSIONS.join(", ")} (max 5 MB
+                          each)
                         </Text>
                         <input
                           ref={fileInputRef}
                           type="file"
                           accept={ACCEPTED_EXTENSIONS.join(",")}
+                          multiple
                           className="hidden-file-input"
                           onChange={(event) =>
-                            handlePickedFile(
-                              event.currentTarget.files?.[0] ?? null,
-                            )
+                            handlePickedFiles(event.currentTarget.files)
                           }
-                          disabled={isUploading || Boolean(uploadDecision)}
+                          disabled={uploadBatchInProgress}
                         />
                         <Button
                           variant="default"
                           onClick={() => fileInputRef.current?.click()}
-                          disabled={isUploading || Boolean(uploadDecision)}
+                          disabled={uploadBatchInProgress}
                         >
-                          Choose File
+                          Choose Files
                         </Button>
                       </Stack>
                     </Paper>
 
-                    {selectedFile ? (
+                    {uploadedFiles.length > 0 ? (
                       <Paper withBorder radius="md" p="sm">
                         <Stack gap="sm">
-                          <Group justify="space-between" align="center">
-                            <div>
-                              <Text fw={600}>{selectedFile.name}</Text>
-                              <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                                {formatSize(selectedFile.size)}
-                              </Text>
-                            </div>
-                            <Button
-                              onClick={handleUpload}
-                              loading={isUploading}
-                              disabled={isUploading || Boolean(uploadDecision)}
+                          <Text fw={600} size="sm">
+                            Selected files ({uploadedFiles.length})
+                          </Text>
+                          {uploadedFiles.map((fileTracking) => (
+                            <Paper
+                              key={fileTracking.id}
+                              withBorder
+                              radius="sm"
+                              p="xs"
+                              bg="gray.0"
                             >
-                              Upload
+                              <Stack gap="xs">
+                                <Group justify="space-between" align="center">
+                                  <div>
+                                    <Text fw={600} size="sm">
+                                      {fileTracking.file.name}
+                                    </Text>
+                                    <Text size="xs" c={SECONDARY_TEXT_COLOR}>
+                                      {formatSize(fileTracking.file.size)}
+                                    </Text>
+                                  </div>
+                                  <Badge
+                                    variant="light"
+                                    color={
+                                      fileTracking.status === "completed"
+                                        ? "teal"
+                                        : fileTracking.status === "rejected"
+                                          ? "red"
+                                          : fileTracking.status === "error"
+                                            ? "red"
+                                            : fileTracking.status ===
+                                                "decision-pending"
+                                              ? "yellow"
+                                              : fileTracking.status ===
+                                                  "uploading"
+                                                ? "blue"
+                                                : "gray"
+                                    }
+                                  >
+                                    {fileTracking.status === "pending"
+                                      ? "Ready"
+                                      : fileTracking.status === "uploading"
+                                        ? "Uploading..."
+                                        : fileTracking.status ===
+                                            "decision-pending"
+                                          ? "Review needed"
+                                          : fileTracking.status}
+                                  </Badge>
+                                </Group>
+                                <TextInput
+                                  label="Source URL (optional)"
+                                  placeholder="https://example.com/document.pdf"
+                                  size="xs"
+                                  value={sourceUrls[fileTracking.id] ?? ""}
+                                  onChange={(event) => {
+                                    const value =
+                                      event.currentTarget?.value ??
+                                      event.target?.value ??
+                                      "";
+                                    setSourceUrls((current) => ({
+                                      ...current,
+                                      [fileTracking.id]: value,
+                                    }));
+                                  }}
+                                  disabled={
+                                    uploadBatchInProgress ||
+                                    fileTracking.status !== "pending"
+                                  }
+                                />
+                              </Stack>
+                            </Paper>
+                          ))}
+                          <Group gap="sm">
+                            <Button
+                              onClick={() => void handleUploadAll()}
+                              loading={uploadBatchInProgress}
+                              disabled={
+                                uploadBatchInProgress ||
+                                !uploadedFiles.some(
+                                  (f) => f.status === "pending",
+                                )
+                              }
+                            >
+                              Upload All
+                            </Button>
+                            <Button
+                              variant="default"
+                              onClick={() => {
+                                setUploadedFiles([]);
+                                setSourceUrls({});
+                                if (fileInputRef.current)
+                                  fileInputRef.current.value = "";
+                              }}
+                              disabled={uploadBatchInProgress}
+                            >
+                              Clear
                             </Button>
                           </Group>
-                          <TextInput
-                            label="Source URL (optional)"
-                            placeholder="https://example.com/original-document.pdf"
-                            value={sourceUrl}
-                            onChange={(event) =>
-                              setSourceUrl(event.currentTarget.value)
-                            }
-                            disabled={isUploading || Boolean(uploadDecision)}
-                          />
                         </Stack>
                       </Paper>
                     ) : null}
 
-                    {isUploading ? (
+                    {uploadBatchInProgress ? (
                       <Progress
                         value={uploadProgress}
                         animated
@@ -1093,277 +1271,322 @@ export default function DocIngestion() {
                         closeButtonLabel="Dismiss upload success"
                         onClose={() => setUploadSuccess(null)}
                       >
-                        <Stack gap={4}>
-                          <Text size="sm">{uploadSuccess.message}</Text>
-                          {uploadSuccess.screeningSummary ? (
-                            <>
-                              <Stack gap={2}>
-                                <Group gap="xs" align="center">
-                                  <Text size="sm" fw={600}>
-                                    PHI screening
-                                  </Text>
-                                  {acceptedPhiStatus ? (
-                                    <Badge
-                                      color={acceptedPhiStatus.color}
-                                      variant="light"
-                                    >
-                                      {acceptedPhiStatus.label}
-                                    </Badge>
-                                  ) : null}
-                                </Group>
-                                {acceptedPhiStatus ? (
-                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                                    {acceptedPhiStatus.detail}
-                                  </Text>
-                                ) : null}
-                              </Stack>
-                              <Stack gap={2}>
-                                <Group gap="xs" align="center">
-                                  <Text size="sm" fw={600}>
-                                    Relevance assessment
-                                  </Text>
-                                  {acceptedRelevanceStatus ? (
-                                    <Badge
-                                      color={acceptedRelevanceStatus.color}
-                                      variant="light"
-                                    >
-                                      {acceptedRelevanceStatus.label}
-                                    </Badge>
-                                  ) : null}
-                                </Group>
-                                {acceptedRelevanceStatus ? (
-                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                                    {acceptedRelevanceStatus.detail}
-                                  </Text>
-                                ) : null}
-                              </Stack>
-                            </>
-                          ) : null}
-                        </Stack>
+                        {uploadSuccess.message}
                       </Alert>
                     ) : null}
-                    {uploadDecision ? (
+                    {uploadedFiles.filter(
+                      (f) => f.status === "decision-pending",
+                    ).length > 0 ? (
                       <Alert
                         color="yellow"
                         variant="light"
-                        title="Document review required"
+                        title="Documents review required"
                       >
-                        <Stack gap="sm">
-                          <Stack gap={4}>
-                            <Stack gap={2}>
-                              <Group gap="xs" align="center">
-                                <Text size="sm" fw={600}>
-                                  PHI screening
-                                </Text>
-                                {rejectedPhiStatus ? (
-                                  <Badge
-                                    color={rejectedPhiStatus.color}
-                                    variant="light"
-                                  >
-                                    {rejectedPhiStatus.label}
-                                  </Badge>
-                                ) : null}
-                              </Group>
-                              {rejectedPhiStatus ? (
-                                <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                                  {rejectedPhiStatus.detail}
-                                </Text>
-                              ) : null}
-                            </Stack>
-                            <Stack gap={2}>
-                              <Group gap="xs" align="center">
-                                <Text size="sm" fw={600}>
-                                  Relevance assessment
-                                </Text>
-                                {rejectedRelevanceStatus ? (
-                                  <Badge
-                                    color={rejectedRelevanceStatus.color}
-                                    variant="light"
-                                  >
-                                    {rejectedRelevanceStatus.label}
-                                  </Badge>
-                                ) : null}
-                              </Group>
-                              {rejectedRelevanceStatus ? (
-                                <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                                  {rejectedRelevanceStatus.detail}
-                                </Text>
-                              ) : null}
-                            </Stack>
-                          </Stack>
-                          <Text size="sm">
-                            {formatRejectedUploadSummary(
-                              uploadDecision.response,
-                              uploadDecision.fileName,
-                            )}
-                          </Text>
-                          {uploadDecision.response.screeningSummary
-                            ?.isRelevant === false ||
-                          uploadDecision.response.reason === "not_relevant" ||
-                          uploadDecision.response.reason ===
-                            "possible_phi_detected_and_not_relevant" ? (
-                            <Paper withBorder radius="md" p="sm">
-                              <Stack gap={4}>
-                                <Text size="sm" fw={600}>
-                                  Relevance screening
-                                </Text>
-                                <Text size="sm">
-                                  Result: <strong>Not relevant</strong>
-                                </Text>
-                                {uploadDecision.response.screeningSummary
-                                  ?.relevanceReason ? (
-                                  <Text size="sm">
-                                    Reason:{" "}
-                                    {
-                                      uploadDecision.response.screeningSummary
-                                        .relevanceReason
-                                    }
-                                  </Text>
-                                ) : null}
-                              </Stack>
-                            </Paper>
-                          ) : null}
-                          {uploadDecision.response.screeningSummary
-                            ?.phiDetected ||
-                          uploadDecision.response.reason ===
-                            "possible_phi_detected" ||
-                          uploadDecision.response.reason ===
-                            "possible_phi_detected_and_not_relevant" ? (
-                            <Paper withBorder radius="md" p="sm">
-                              <Stack gap={6}>
-                                <Stack gap={0}>
-                                  <Text size="sm" fw={600}>
-                                    PHI Screening
-                                  </Text>
-                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                                    Detected Categories (% = Confidence)
-                                  </Text>
-                                </Stack>
-                                {filteredPhiGroups.length ? (
-                                  filteredPhiGroups.map((group) => {
-                                    const visibleCount =
-                                      visiblePhiGroupCounts[group.key] ??
-                                      INITIAL_PHI_GROUP_EXAMPLE_COUNT;
-                                    const visibleItems = group.items.slice(
-                                      0,
-                                      visibleCount,
-                                    );
-                                    const remainingCount = Math.max(
-                                      group.items.length - visibleItems.length,
-                                      0,
-                                    );
+                        <Stack gap="md">
+                          {uploadedFiles
+                            .filter((f) => f.status === "decision-pending")
+                            .map((fileTracking) => {
+                              if (
+                                !fileTracking.response ||
+                                fileTracking.response.status !== "rejected"
+                              ) {
+                                return null;
+                              }
 
-                                    return (
-                                      <Stack key={group.key} gap={4}>
-                                        <Box
-                                          component="ul"
-                                          m={0}
-                                          pl="xl"
-                                          style={{ listStyleType: "disc" }}
-                                        >
-                                          <Text
-                                            component="li"
-                                            size="sm"
-                                            fw={600}
-                                          >
-                                            {group.label} ({group.items.length})
+                              const response = fileTracking.response;
+                              const phiStatus = getScreeningBadge(
+                                getRejectedPhiStatus(response),
+                              );
+                              const relevanceStatus = getScreeningBadge(
+                                getRejectedRelevanceStatus(response),
+                              );
+                              const phiGroups = (response.phiGroups ?? []).map(
+                                (group) => ({
+                                  key: group.key,
+                                  label: group.label,
+                                  items: group.items,
+                                }),
+                              );
+
+                              return (
+                                <Paper
+                                  key={fileTracking.id}
+                                  withBorder
+                                  radius="md"
+                                  p="md"
+                                >
+                                  <Stack gap="sm">
+                                    <Text fw={600}>
+                                      {fileTracking.file.name}
+                                    </Text>
+
+                                    <Stack gap={4}>
+                                      <Stack gap={2}>
+                                        <Group gap="xs" align="center">
+                                          <Text size="sm" fw={600}>
+                                            PHI screening
                                           </Text>
-                                        </Box>
-                                        <Box
-                                          component="ul"
-                                          m={0}
-                                          ml="lg"
-                                          pl="1.75rem"
-                                          style={{ listStyleType: "circle" }}
-                                        >
-                                          {visibleItems.map((entity, index) => (
-                                            <Text
-                                              key={`${group.key}-${entity.text}-${index}`}
-                                              component="li"
-                                              size="sm"
+                                          {phiStatus ? (
+                                            <Badge
+                                              color={phiStatus.color}
+                                              variant="light"
                                             >
-                                              {entity.text || "Unknown"} (
-                                              {formatPhiScore(entity.score)})
-                                            </Text>
-                                          ))}
-                                        </Box>
-                                        {remainingCount > 0 ? (
-                                          <Group gap="xs">
-                                            <Button
-                                              size="xs"
-                                              variant="default"
-                                              onClick={() =>
-                                                setVisiblePhiGroupCounts(
-                                                  (current) => ({
-                                                    ...current,
-                                                    [group.key]: Math.min(
-                                                      visibleCount +
-                                                        INITIAL_PHI_GROUP_EXAMPLE_COUNT,
-                                                      group.items.length,
-                                                    ),
-                                                  }),
-                                                )
-                                              }
-                                            >
-                                              Show{" "}
-                                              {Math.min(
-                                                INITIAL_PHI_GROUP_EXAMPLE_COUNT,
-                                                remainingCount,
-                                              )}{" "}
-                                              more
-                                            </Button>
-                                            <Button
-                                              size="xs"
-                                              variant="subtle"
-                                              onClick={() =>
-                                                setVisiblePhiGroupCounts(
-                                                  (current) => ({
-                                                    ...current,
-                                                    [group.key]:
-                                                      group.items.length,
-                                                  }),
-                                                )
-                                              }
-                                            >
-                                              Show all
-                                            </Button>
-                                          </Group>
+                                              {phiStatus.label}
+                                            </Badge>
+                                          ) : null}
+                                        </Group>
+                                        {phiStatus ? (
+                                          <Text
+                                            size="sm"
+                                            c={SECONDARY_TEXT_COLOR}
+                                          >
+                                            {phiStatus.detail}
+                                          </Text>
                                         ) : null}
                                       </Stack>
-                                    );
-                                  })
-                                ) : (
-                                  <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                                    No PHI entries above 80% confidence were
-                                    found to display.
-                                  </Text>
-                                )}
-                              </Stack>
-                            </Paper>
-                          ) : null}
-                          <Group gap="sm">
-                            <Button
-                              variant="default"
-                              onClick={() => void handleCancelRejectedUpload()}
-                              loading={
-                                resolvingRejectedUploadAction === "cancel"
-                              }
-                              disabled={resolvingRejectedUploadAction !== null}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              color="yellow"
-                              onClick={() => void handleUploadAnyway()}
-                              loading={
-                                resolvingRejectedUploadAction ===
-                                "upload-anyway"
-                              }
-                              disabled={resolvingRejectedUploadAction !== null}
-                            >
-                              Upload anyway
-                            </Button>
-                          </Group>
+                                      <Stack gap={2}>
+                                        <Group gap="xs" align="center">
+                                          <Text size="sm" fw={600}>
+                                            Relevance assessment
+                                          </Text>
+                                          {relevanceStatus ? (
+                                            <Badge
+                                              color={relevanceStatus.color}
+                                              variant="light"
+                                            >
+                                              {relevanceStatus.label}
+                                            </Badge>
+                                          ) : null}
+                                        </Group>
+                                        {relevanceStatus ? (
+                                          <Text
+                                            size="sm"
+                                            c={SECONDARY_TEXT_COLOR}
+                                          >
+                                            {relevanceStatus.detail}
+                                          </Text>
+                                        ) : null}
+                                      </Stack>
+                                    </Stack>
+
+                                    <Text size="sm">
+                                      {formatRejectedUploadSummary(
+                                        response,
+                                        fileTracking.file.name,
+                                      )}
+                                    </Text>
+
+                                    {response.screeningSummary?.isRelevant ===
+                                      false ||
+                                    response.reason === "not_relevant" ||
+                                    response.reason ===
+                                      "possible_phi_detected_and_not_relevant" ? (
+                                      <Paper withBorder radius="md" p="sm">
+                                        <Stack gap={4}>
+                                          <Text size="sm" fw={600}>
+                                            Relevance screening
+                                          </Text>
+                                          <Text size="sm">
+                                            Result:{" "}
+                                            <strong>Not relevant</strong>
+                                          </Text>
+                                          {response.screeningSummary
+                                            ?.relevanceReason ? (
+                                            <Text size="sm">
+                                              Reason:{" "}
+                                              {
+                                                response.screeningSummary
+                                                  .relevanceReason
+                                              }
+                                            </Text>
+                                          ) : null}
+                                        </Stack>
+                                      </Paper>
+                                    ) : null}
+
+                                    {response.screeningSummary?.phiDetected ||
+                                    response.reason ===
+                                      "possible_phi_detected" ||
+                                    response.reason ===
+                                      "possible_phi_detected_and_not_relevant" ? (
+                                      <Paper withBorder radius="md" p="sm">
+                                        <Stack gap={6}>
+                                          <Stack gap={0}>
+                                            <Text size="sm" fw={600}>
+                                              PHI Screening
+                                            </Text>
+                                            <Text
+                                              size="sm"
+                                              c={SECONDARY_TEXT_COLOR}
+                                            >
+                                              Detected Categories (% =
+                                              Confidence)
+                                            </Text>
+                                          </Stack>
+                                          {phiGroups.length ? (
+                                            phiGroups.map((group) => {
+                                              const visibleCount =
+                                                visiblePhiGroupCounts[
+                                                  `${fileTracking.id}-${group.key}`
+                                                ] ??
+                                                INITIAL_PHI_GROUP_EXAMPLE_COUNT;
+                                              const visibleItems =
+                                                group.items.slice(
+                                                  0,
+                                                  visibleCount,
+                                                );
+                                              const remainingCount = Math.max(
+                                                group.items.length -
+                                                  visibleItems.length,
+                                                0,
+                                              );
+
+                                              return (
+                                                <Stack
+                                                  key={`${fileTracking.id}-${group.key}`}
+                                                  gap={4}
+                                                >
+                                                  <Box
+                                                    component="ul"
+                                                    m={0}
+                                                    pl="xl"
+                                                    style={{
+                                                      listStyleType: "disc",
+                                                    }}
+                                                  >
+                                                    <Text
+                                                      component="li"
+                                                      size="sm"
+                                                      fw={600}
+                                                    >
+                                                      {group.label} (
+                                                      {group.items.length})
+                                                    </Text>
+                                                  </Box>
+                                                  <Box
+                                                    component="ul"
+                                                    m={0}
+                                                    ml="lg"
+                                                    pl="1.75rem"
+                                                    style={{
+                                                      listStyleType: "circle",
+                                                    }}
+                                                  >
+                                                    {visibleItems.map(
+                                                      (entity, index) => (
+                                                        <Text
+                                                          key={`${fileTracking.id}-${group.key}-${entity.text}-${index}`}
+                                                          component="li"
+                                                          size="sm"
+                                                        >
+                                                          {entity.text ||
+                                                            "Unknown"}{" "}
+                                                          (
+                                                          {formatPhiScore(
+                                                            entity.score,
+                                                          )}
+                                                          )
+                                                        </Text>
+                                                      ),
+                                                    )}
+                                                  </Box>
+                                                  {remainingCount > 0 ? (
+                                                    <Group gap="xs">
+                                                      <Button
+                                                        size="xs"
+                                                        variant="default"
+                                                        onClick={() =>
+                                                          setVisiblePhiGroupCounts(
+                                                            (current) => ({
+                                                              ...current,
+                                                              [`${fileTracking.id}-${group.key}`]:
+                                                                Math.min(
+                                                                  visibleCount +
+                                                                    INITIAL_PHI_GROUP_EXAMPLE_COUNT,
+                                                                  group.items
+                                                                    .length,
+                                                                ),
+                                                            }),
+                                                          )
+                                                        }
+                                                      >
+                                                        Show{" "}
+                                                        {Math.min(
+                                                          INITIAL_PHI_GROUP_EXAMPLE_COUNT,
+                                                          remainingCount,
+                                                        )}{" "}
+                                                        more
+                                                      </Button>
+                                                      <Button
+                                                        size="xs"
+                                                        variant="subtle"
+                                                        onClick={() =>
+                                                          setVisiblePhiGroupCounts(
+                                                            (current) => ({
+                                                              ...current,
+                                                              [`${fileTracking.id}-${group.key}`]:
+                                                                group.items
+                                                                  .length,
+                                                            }),
+                                                          )
+                                                        }
+                                                      >
+                                                        Show all
+                                                      </Button>
+                                                    </Group>
+                                                  ) : null}
+                                                </Stack>
+                                              );
+                                            })
+                                          ) : (
+                                            <Text
+                                              size="sm"
+                                              c={SECONDARY_TEXT_COLOR}
+                                            >
+                                              No PHI entries above 80%
+                                              confidence were found to display.
+                                            </Text>
+                                          )}
+                                        </Stack>
+                                      </Paper>
+                                    ) : null}
+
+                                    <Group gap="sm">
+                                      <Button
+                                        variant="default"
+                                        onClick={() =>
+                                          void handleRejectFile(fileTracking.id)
+                                        }
+                                        loading={
+                                          fileTracking.status === "uploading"
+                                        }
+                                        disabled={
+                                          fileTracking.status === "uploading"
+                                        }
+                                      >
+                                        Reject
+                                      </Button>
+                                      <Button
+                                        color="yellow"
+                                        onClick={() =>
+                                          void handleApproveFile(
+                                            fileTracking.id,
+                                          )
+                                        }
+                                        loading={
+                                          fileTracking.status === "uploading"
+                                        }
+                                        disabled={
+                                          fileTracking.status === "uploading"
+                                        }
+                                      >
+                                        Upload Anyway
+                                      </Button>
+                                    </Group>
+                                  </Stack>
+                                </Paper>
+                              );
+                            })}
                         </Stack>
                       </Alert>
                     ) : null}
@@ -1527,7 +1750,7 @@ export default function DocIngestion() {
                                           previewDocumentKey === document.key
                                         }
                                         disabled={
-                                          isUploading ||
+                                          uploadBatchInProgress ||
                                           pendingDownloadKey !== null ||
                                           (isPreviewLoading &&
                                             previewDocumentKey !== document.key)
@@ -1551,7 +1774,7 @@ export default function DocIngestion() {
                                         (pendingDownloadKey !== null &&
                                           pendingDownloadKey !==
                                             document.key) ||
-                                        isUploading
+                                        uploadBatchInProgress
                                       }
                                     >
                                       Download
@@ -1565,7 +1788,7 @@ export default function DocIngestion() {
                                       }
                                       disabled={
                                         isDeleting ||
-                                        isUploading ||
+                                        uploadBatchInProgress ||
                                         pendingDownloadKey !== null
                                       }
                                     >
@@ -1633,6 +1856,10 @@ export default function DocIngestion() {
                   {isUnsupportedQueriesLoading ? (
                     <Text c={SECONDARY_TEXT_COLOR}>
                       Loading unsupported queries...
+                    </Text>
+                  ) : unsupportedQueries.length === 0 ? (
+                    <Text c={SECONDARY_TEXT_COLOR}>
+                      No unsupported queries found.
                     </Text>
                   ) : (
                     <Stack gap="sm">
