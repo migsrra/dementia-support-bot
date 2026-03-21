@@ -29,13 +29,13 @@ export function meta({}: Route.MetaArgs) {
 }
 
 type ChatMessage = {
-  id: number;
+  id: string;
   role: "assistant" | "user";
   text: string;
 };
 
 type Conversation = {
-  id: number;
+  id: string;
   sessionID: string;
   title: string;
   messages: ChatMessage[];
@@ -73,6 +73,17 @@ function createSessionId() {
   return `${Date.now()}-${randomPart}`;
 }
 
+function createClientId() {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `${Date.now()}-${randomPart}`;
+}
+
 function normalizeAssistantText(text: string) {
   return text
     .replace(/\r\n?/g, "\n")
@@ -81,17 +92,17 @@ function normalizeAssistantText(text: string) {
     .trim();
 }
 
-// Initial data
-const seedMessages: ChatMessage[] = [
-  {
-    id: 1,
-    role: "assistant",
-    text: "Hi, I’m your dementia caregiving support chatbot. I’m here to answer questions and provide guidance related to dementia care.",
-  },
-];
+const INITIAL_ASSISTANT_MESSAGE =
+  "Hi, I’m your dementia caregiving support chatbot. I’m here to answer questions and provide guidance related to dementia care.";
 
-let nextMessageId = 2;
-let nextConversationId = 2;
+function createAssistantGreetingMessage(): ChatMessage {
+  return {
+    id: createClientId(),
+    role: "assistant",
+    text: INITIAL_ASSISTANT_MESSAGE,
+  };
+}
+
 const STARTER_QUESTIONS = [
   "How can I calm someone with dementia who is feeling anxious?",
   "What are some ways to build a simple daily routine for dementia care?",
@@ -211,20 +222,22 @@ export default function Home() {
   // states
   const [conversations, setConversations] = useState<Conversation[]>([
     {
-      id: 1,
+      id: createClientId(),
       sessionID: createSessionId(),
       title: "Current Conversation",
-      messages: seedMessages,
+      messages: [createAssistantGreetingMessage()],
     },
   ]);
-  const [activeConversationId, setActiveConversationId] = useState(1);
+  const [activeConversationId, setActiveConversationId] = useState(
+    () => conversations[0]?.id ?? "",
+  );
   const [draft, setDraft] = useState("");
   const [sendingConversationIds, setSendingConversationIds] = useState<
-    number[]
+    string[]
   >([]);
   const [showStarterQuestions, setShowStarterQuestions] = useState(false);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
-  const controllersRef = useRef<Record<number, AbortController>>({});
+  const controllersRef = useRef<Record<string, AbortController>>({});
 
   const activeConversation =
     conversations.find(
@@ -234,7 +247,7 @@ export default function Home() {
     activeConversation &&
       activeConversation.messages.every((message) => message.role !== "user"),
   );
-  const isConversationSending = (conversationId: number) =>
+  const isConversationSending = (conversationId: string) =>
     sendingConversationIds.includes(conversationId);
   const isActiveConversationSending = Boolean(
     activeConversation && isConversationSending(activeConversation.id),
@@ -256,16 +269,10 @@ export default function Home() {
   // new conversation handler
   function handleNewConversation() {
     const newConversation: Conversation = {
-      id: nextConversationId++,
+      id: createClientId(),
       sessionID: createSessionId(),
-      title: `New Conversation ${nextConversationId - 1}`,
-      messages: [
-        {
-          id: nextMessageId++,
-          role: "assistant",
-          text: "Hi, I’m your dementia caregiving support chatbot. I’m here to answer questions and provide guidance related to dementia care.",
-        },
-      ],
+      title: `New Conversation ${conversations.length + 1}`,
+      messages: [createAssistantGreetingMessage()],
     };
     // update states
     setConversations((current) => [newConversation, ...current]);
@@ -296,7 +303,7 @@ export default function Home() {
         : [...current, conversationId],
     );
     const userMessage: ChatMessage = {
-      id: nextMessageId++,
+      id: createClientId(),
       role: "user",
       text: trimmed,
     };
@@ -323,7 +330,7 @@ export default function Home() {
     try {
       const reply = await getAssistantReply(trimmed, sessionID, newController.signal);
       const assistantMessage: ChatMessage = {
-        id: nextMessageId++,
+        id: createClientId(),
         role: "assistant",
         text: reply.text,
       };
@@ -342,7 +349,7 @@ export default function Home() {
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         const cancelledMessage: ChatMessage = {
-          id: nextMessageId++,
+          id: createClientId(),
           role: "assistant",
           text: "Response cancelled.",
         };
