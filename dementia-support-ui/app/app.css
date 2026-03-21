@@ -74,6 +74,30 @@ body {
   background: #fdfefb;
 }
 
+.starter-questions {
+  align-items: flex-start;
+}
+
+.starter-question-button {
+  width: 100%;
+  height: auto;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.96);
+  color: #0f172a;
+  white-space: normal;
+  text-align: left;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.45;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.starter-question-button:hover {
+  background: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.42);
+}
+
 .typing-indicator {
   display: inline-flex;
   gap: 3px;
