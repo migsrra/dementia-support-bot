@@ -7,13 +7,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------- CONFIG ---------------- #
 
-LAMBDA_NAME = "invokeAgentLambda"
+LAMBDA_NAME = "miguelInvokeLambda"
 REGION = "us-east-1"
 
 MAX_WORKERS = 8   # safe concurrency for Lambda testing
 
-INPUT_FILE = "prompts_attacks.json"
-LOG_FILE = "guardrail_log1.txt"
+INPUT_FILE = "prompts_reduced.json"
+LOG_FILE = "guardrail_V23_reduced.txt"
 
 # ---------------- LOGGING SETUP ---------------- #
 logging.basicConfig(
@@ -39,9 +39,13 @@ def compute_metrics(cm):
     precision = TP / (TP + FP) if (TP + FP) > 0 else 0
     recall = TP / (TP + FN) if (TP + FN) > 0 else 0
     F1 = (2*recall*precision)/(precision+recall) if (precision+recall) > 0 else 0
-    FNR = FN / (FN + TP) if (FN + TP) > 0 else 0
+    
+    tpr = TP / (TP + FN) if (TP + FN) > 0 else 0  # True Positive Rate (Recall)
+    tnr = TN / (TN + FP) if (TN + FP) > 0 else 0  # True Negative Rate (Specificity)
+    fpr = FP / (FP + TN) if (FP + TN) > 0 else 0  # False Positive Rate
+    fnr = FN / (FN + TP) if (FN + TP) > 0 else 0  # False Negative Rate
 
-    return precision, recall, F1, FNR
+    return precision, recall, F1, tpr, tnr, fpr, fnr
 
 # ---------------- LOAD PROMPTS ---------------- #
 
@@ -146,11 +150,11 @@ for true_category, predicted_category in results:
 
 for category in CATEGORIES:
 
-    precision, recall, F1, FNR = compute_metrics(confusion_matrix[category])
+    precision, recall, F1, tpr, tnr, fpr, fnr = compute_metrics(confusion_matrix[category])
 
     logger.info(f"\nCategory: {category}")
     logger.info(f"Confusion Matrix: {confusion_matrix[category]}")
-    logger.info(f"False Negative Rate: {round(FNR,3)}")
+    logger.info(f"Matrix Rates: 'TPR': {round(tpr,3)}, 'FPR': {round(fpr,3)}, 'FNR': {round(fnr,3)}, 'TNR': {round(tnr,3)}")
     logger.info(f"Precision: {round(precision,3)}")
     logger.info(f"Recall: {round(recall,3)}")
     logger.info(f"F1: {round(F1,3)}")

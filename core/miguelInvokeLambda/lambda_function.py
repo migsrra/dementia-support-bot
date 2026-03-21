@@ -18,23 +18,8 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 ALLOWED_AGENT_ID = os.getenv("ALLOWED_AGENT_ID")
 ALLOWED_AGENT_ALIAS = os.getenv("ALLOWED_AGENT_ALIAS")
 
-SELFHARM_LOW_AGENT_ID = os.getenv("SELFHARM_LOW_AGENT_ID")
-SELFHARM_LOW_AGENT_ALIAS = os.getenv("SELFHARM_LOW_AGENT_ALIAS")
-
-SELFHARM_HIGH_AGENT_ID = os.getenv("SELFHARM_HIGH_AGENT_ID")
-SELFHARM_HIGH_AGENT_ALIAS = os.getenv("SELFHARM_HIGH_AGENT_ALIAS")
-
-CAREGIVERBURNOUT_HIGH_AGENT_ID = os.getenv("CAREGIVERBURNOUT_HIGH_AGENT_ID")
-CAREGIVERBURNOUT_HIGH_AGENT_ALIAS = os.getenv("CAREGIVERBURNOUT_HIGH_AGENT_ALIAS")
-
-CAREGIVERBURNOUT_LOW_AGENT_ID = os.getenv("CAREGIVERBURNOUT_LOW_AGENT_ID")
-CAREGIVERBURNOUT_LOW_AGENT_ALIAS = os.getenv("CAREGIVERBURNOUT_LOW_AGENT_ALIAS")
-
-PATIENTAGGRESSION_HIGH_AGENT_ID = os.getenv("PATIENTAGGRESSION_HIGH_AGENT_ID")
-PATIENTAGGRESSION_HIGH_AGENT_ALIAS = os.getenv("PATIENTAGGRESSION_HIGH_AGENT_ALIAS")
-
-PATIENTAGGRESSION_LOW_AGENT_ID = os.getenv("PATIENTAGGRESSION_LOW_AGENT_ID")
-PATIENTAGGRESSION_LOW_AGENT_ALIAS = os.getenv("PATIENTAGGRESSION_LOW_AGENT_ALIAS")
+HARM_AGENT_ID = os.getenv("HARM_AGENT_ID")
+HARM_AGENT_ALIAS = os.getenv("HARM_AGENT_ALIAS")
 
 LEGAL_AGENT_ID = os.getenv("LEGAL_AGENT_ID")
 LEGAL_AGENT_ALIAS= os.getenv("LEGAL_AGENT_ALIAS")
@@ -47,7 +32,7 @@ NON_RELATED_AGENT_ALIAS = os.getenv("NON_RELATED_AGENT_ALIAS")
 
 DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME")
 
-MAID_EUTHANESIA_TEMPLATE = dedent(
+MAID_EUTHANASIA_TEMPLATE = dedent(
     """
     I'm not able to respond to this request, please consult your physician.
 
@@ -137,13 +122,12 @@ def extract_masked_text(guardrail_output):
     # Fallback: if no tags found, return the original (or use a cleaner strip)
     return guardrail_output.strip()
 
-def harm_priority_topic(detected_topics):
+def harm_topic(detected_topics):
     for topic in harm_priority_order:        # return highest priority topic if they exist
         if topic in detected_topics:
-            return topic
-    return None
+            return True
+    return False
 
-    
 def non_harm_priority_topic(detected_topics):
     for topic in non_harm_priority_order:       # return highest priority non-harm topic
         if topic in detected_topics:
@@ -178,12 +162,13 @@ def _agent_for_routing_mode(routing_mode):
     agent_map = {
         "Allowed": (ALLOWED_AGENT_ID, ALLOWED_AGENT_ALIAS),
         "Medical_Education_Inquiry": (ALLOWED_AGENT_ID, ALLOWED_AGENT_ALIAS),
-        "Self_Harm_High": (SELFHARM_HIGH_AGENT_ID, SELFHARM_HIGH_AGENT_ALIAS),
-        "Self_Harm_Low": (SELFHARM_LOW_AGENT_ID, SELFHARM_LOW_AGENT_ALIAS),
-        "Patient_Aggression_High": (PATIENTAGGRESSION_HIGH_AGENT_ID, PATIENTAGGRESSION_HIGH_AGENT_ALIAS),
-        "Patient_Aggression_Low": (PATIENTAGGRESSION_LOW_AGENT_ID, PATIENTAGGRESSION_LOW_AGENT_ALIAS),
-        "Caregiver_Burnout_High": (CAREGIVERBURNOUT_HIGH_AGENT_ID, CAREGIVERBURNOUT_HIGH_AGENT_ALIAS),
-        "Caregiver_Burnout_Low": (CAREGIVERBURNOUT_LOW_AGENT_ID, CAREGIVERBURNOUT_LOW_AGENT_ALIAS),
+        "Harm_Detected": (HARM_AGENT_ID, HARM_AGENT_ALIAS),
+        # "Self_Harm_High": (SELFHARM_HIGH_AGENT_ID, SELFHARM_HIGH_AGENT_ALIAS),
+        # "Self_Harm_Low": (SELFHARM_LOW_AGENT_ID, SELFHARM_LOW_AGENT_ALIAS),
+        # "Patient_Aggression_High": (PATIENTAGGRESSION_HIGH_AGENT_ID, PATIENTAGGRESSION_HIGH_AGENT_ALIAS),
+        # "Patient_Aggression_Low": (PATIENTAGGRESSION_LOW_AGENT_ID, PATIENTAGGRESSION_LOW_AGENT_ALIAS),
+        # "Caregiver_Burnout_High": (CAREGIVERBURNOUT_HIGH_AGENT_ID, CAREGIVERBURNOUT_HIGH_AGENT_ALIAS),
+        # "Caregiver_Burnout_Low": (CAREGIVERBURNOUT_LOW_AGENT_ID, CAREGIVERBURNOUT_LOW_AGENT_ALIAS),
         "Medication_Dosing_Changes": (DOSAGE_DIAGNOSIS_AGENT_ID, DOSAGE_DIAGNOSIS_AGENT_ALIAS),
         "Medical_Diagnosis_Interpretation": (DOSAGE_DIAGNOSIS_AGENT_ID, DOSAGE_DIAGNOSIS_AGENT_ALIAS),
         "Legal_High_Stakes_Financial_Execution": (LEGAL_AGENT_ID, LEGAL_AGENT_ALIAS),
@@ -239,7 +224,6 @@ def lambda_handler(event, context):
       
         logger.info(json.dumps(guardrail_response, indent=2))
 
-        message = "Allowed"
         routing_mode = "Allowed"
         greeting_query = False      # if greeting, allow and don't check groundedness
         bypass_agent = False
@@ -259,7 +243,7 @@ def lambda_handler(event, context):
             for filter in filters:
                 type = filter.get("type")
                 if type == "PROMPT_ATTACK":     # hard refusal, bypass agent
-                    message = "Prompt_Attack"
+                    routing_mode = "Prompt_Attack"
                     completion = PROMPT_ATTACK_TEMPLATE
                     bypass_agent = True
             
@@ -269,35 +253,39 @@ def lambda_handler(event, context):
             flagged_topics = [item['name'] for item in topics]
             print("topics:", flagged_topics)
 
-            high_priority_topic = harm_priority_topic(flagged_topics)   # harm topics prioritized
             low_priority_topic = non_harm_priority_topic(flagged_topics)       # non-crisis topics only, set routing based on priority
 
-            if high_priority_topic:
-                routing_mode = high_priority_topic
-            elif "MAID_Euthanesia" in flagged_topics:
-                message = "MAID_Euthanesia"
-                completion = MAID_EUTHANESIA_TEMPLATE
+            if "MAID_Euthanasia" in flagged_topics:
+                routing_mode = "MAID_Euthanasia"
+                completion = MAID_EUTHANASIA_TEMPLATE
                 bypass_agent = True
+            elif "Harm_Detected" in flagged_topics:
+                routing_mode = "Harm_Detected"
             elif flagged_topics:   
                 if "Dementia_Related" == low_priority_topic:        # only dementia_related flagged, therefore allowed
                     routing_mode = "Allowed"
                     greeting_query = greeting_check(body_str)     # set greeting flag to guide grounding check later
                 elif "Medication_Dosing_Changes" == low_priority_topic or "Medical_Diagnosis_Interpretation" == low_priority_topic:
-                    routing_mode = low_priority_topic
+                    # if also flagged education, verify if it is actually just educational and dementia related
+                    word_policy = assessment.get("wordPolicy", {})
+                    words = word_policy.get("customWords", [])
+                    # print("custom words found:", words)
+
+                    if not words and "Medical_Education_Inquiry" in flagged_topics:    # educational and dementia related      
+                        routing_mode = "Medical_Education_Inquiry"
+                    else:           # medical advice -> hard refusal
+                        routing_mode = low_priority_topic
                 elif "Legal_High_Stakes_Financial_Execution" == low_priority_topic:
-                    message = low_priority_topic
                     routing_mode = low_priority_topic
                 elif not low_priority_topic and "Medical_Education_Inquiry" in flagged_topics and "Dementia_Related" in flagged_topics:  # catch queries that are medical education and related to dementia
                     routing_mode = "Medical_Education_Inquiry"      # education question, not medical advice
                 else:
-                    message = "Non_Dementia_Related_Queries"     
                     routing_mode = "Non_Dementia_Related_Queries"
             else:
                 greeting_query = greeting_check(body_str)
                 if greeting_query:     # if the query is simply a greeting (so wouldn't trigger dementia-related), allow it
                     routing_mode = "Allowed"            
                 else:               # not dementia related nor a crisis or non-crisis topic that is dementia related
-                    message = "Non_Dementia_Related_Queries"  
                     routing_mode = "Non_Dementia_Related_Queries"   
                     
             sensitiveInformationPolicy = assessment.get("sensitiveInformationPolicy", {})
@@ -310,6 +298,7 @@ def lambda_handler(event, context):
             
         print(f"routing mode: {routing_mode}")
         selected_agent_id, selected_agent_alias = _agent_for_routing_mode(routing_mode)
+
 
         # Agent TESTING needs
         clean_context = None
@@ -348,7 +337,8 @@ def lambda_handler(event, context):
                 retrieved_context = ""
                 attribution_citations = []
                 eventLen = 0
-                for event in response.get("completion"):
+
+                for event in response.get("completion"):        # compile agent response and retrieved context
                     #Collect agent output.
                     eventLen += 1
                     if 'chunk' in event:
@@ -385,13 +375,12 @@ def lambda_handler(event, context):
                     completion = completion.replace(" {NAME}", "").strip()
                 orig_response = completion      # agent TESTING, response before grounding overwrites
 
-                # Create a list of lines, strip whitespace, and use a set to unique them
+                # Clean up retrieved context, no repeats
                 unique_lines = list(dict.fromkeys([line.strip() for line in retrieved_context.split("\n") if line.strip()]))
                 clean_context = "\n".join(unique_lines)
 
                 # print("DEBUG RESPONSE", completion)
-                if routing_mode in output_checked_topics:
-                    print("DEBUG CONTEXT", clean_context)       # would only collect references if allowed/low risk topic
+                print("CONTEXT:", clean_context)       # would only collect references if allowed/low risk topic
 
                 # Grounding and Relevance check
                 if clean_context and routing_mode in output_checked_topics and not greeting_query:         # if allowed and not a greeting (normal query)
@@ -441,17 +430,17 @@ def lambda_handler(event, context):
                                 
                                 # Custom threshold logic (optional)
                                 if filter_type == "GROUNDING" and grounding_action == "BLOCKED":
-                                    print("Low grounding detected. Agent might be hallucinating.")
+                                    # print("Low grounding detected. Agent might be hallucinating.")
                                     send_to_db = True
                                 elif filter_type == "RELEVANCE" and relevance_action == "BLOCKED":
-                                    print("Low relevance detected.")
+                                    # print("Low relevance detected.")
                                     if not send_to_db:     # grounding passed, so set irrelevant template response
                                         completion = IRRELEVANT_RESPONSE_TEMPLATE
 
                     except Exception as e:
                         print(f"Error calling Guardrail API: {e}")
 
-                if clean_context and routing_mode in output_checked_topics and send_to_db and not greeting_query:       # if did not find references for an allowed topic
+                if send_to_db and clean_context and routing_mode in output_checked_topics and not greeting_query:       # if did not find references for an allowed topic
                     print("Grounding failed. Forwarding to physician")
                     completion = UNSUPPORTED_QUERY_TEMPLATE
                     send_to_db = True
@@ -475,34 +464,25 @@ def lambda_handler(event, context):
                 elif not clean_context and routing_mode == "Allowed" and greeting_query:        # for testing that we properly leave greeting cases, no grounding
                     print("query with greeting and nothing else")
             
-                print(f"Amount of events: {eventLen}")
-                if attribution_citations:
-                    attribution = {"citations": attribution_citations}
-
                 # if NO context is found, we are trusting the agent to respond accordingly
                 # reason #1: harm categories should not seek advice from the knowledge base, so they wouldn't get context in the first place. the agent responds itself reliably
                 # reason #2: for guardrail flags that are in output_checked_topics but didn't find context, the agent reliably says that it doesn't know enough?
                 # reason #3: often guardrail flags are wrong, so if incorrectly flagged as output_checked_topics but didn't find context, agent understands thats ok but lambda code can't handle that
             
+                print(f"Amount of events: {eventLen}")
+                if attribution_citations:
+                    attribution = {"citations": attribution_citations}
+
             except Exception as e:
                 logger.error(f"Failed to invoke agent: {e}")
                 return _error_response(500, "Failed to invoke Bedrock Agent")
 
-            message = routing_mode
-
-        # response_body = {
-        #     "message": "Agent invoked and returned response",
-        #     "response": completion
-        # }
-
         # response for testing, includes guardrail info for analysis
         response_body = {
-            "message": message,
+            "message": routing_mode,
             "orig_response": orig_response,
             "response": completion,
             "retrieved_context": clean_context,
-            # "routing_mode": routing_mode,
-            # "non_risk_categories": non_risk_categories
             "grounding_score": grounding_score,
             "grounding_action": grounding_action,
             "relevance_score": relevance_score,
