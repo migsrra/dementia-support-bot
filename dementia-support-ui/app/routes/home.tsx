@@ -105,9 +105,8 @@ function createAssistantGreetingMessage(): ChatMessage {
 
 const STARTER_QUESTIONS = [
   "How can I calm someone with dementia who is feeling anxious?",
-  "What are some ways to build a simple daily routine for dementia care?",
-  "Can you suggest ways to organize daily routines for someone with mild dementia?",
-//   "How should I respond when my loved one repeats the same question?",
+  "How do I gently remind my mother to eat her meals on time?",
+  "Tips for engaging a loved one with dementia in conversation?",
   "What safety changes should I make at home for someone with dementia?",
 ];
 
@@ -235,7 +234,6 @@ export default function Home() {
   const [sendingConversationIds, setSendingConversationIds] = useState<
     string[]
   >([]);
-  const [showStarterQuestions, setShowStarterQuestions] = useState(false);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const controllersRef = useRef<Record<string, AbortController>>({});
 
@@ -262,10 +260,6 @@ export default function Home() {
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
   }, [activeConversationId, activeConversation?.messages.length]);
 
-  useEffect(() => {
-    setShowStarterQuestions(false);
-  }, [activeConversationId]);
-
   // new conversation handler
   function handleNewConversation() {
     const newConversation: Conversation = {
@@ -278,7 +272,6 @@ export default function Home() {
     setConversations((current) => [newConversation, ...current]);
     setActiveConversationId(newConversation.id);
     setDraft("");
-    setShowStarterQuestions(false);
   }
 
   // send message handler
@@ -324,7 +317,6 @@ export default function Home() {
     );
 
     setDraft("");
-    setShowStarterQuestions(false);
 
     // send message to backend, return with chatbot response
     try {
@@ -492,19 +484,28 @@ export default function Home() {
                   handleSend();
                 }}
               >
-                {showStarterQuestions && isConversationUnstarted ? (
-                  <Stack gap="xs" mb="sm" className="starter-questions">
-                    <Text size="sm" fw={600} c="dimmed">
+                {isConversationUnstarted ? (
+                  <Stack
+                    key={activeConversation?.id}
+                    gap="xs"
+                    mb="sm"
+                    className="starter-questions"
+                  >
+                    <Text
+                      size="sm"
+                      fw={600}
+                      c="dimmed"
+                      className="starter-question-heading"
+                    >
                       Start with a suggested question
                     </Text>
-                    <Stack gap="sm" w="100%">
+                    <Stack gap="sm" w="100%" className="starter-question-list">
                       {STARTER_QUESTIONS.map((question) => (
                         <Button
-                          key={question}
+                          key={`${activeConversation?.id}-${question}`}
                           type="button"
                           variant="unstyled"
                           radius="xl"
-                          fullWidth
                           justify="flex-start"
                           className="starter-question-button"
                           onMouseDown={(event) => event.preventDefault()}
@@ -525,11 +526,6 @@ export default function Home() {
                     size="md"
                     value={draft}
                     onChange={(event) => setDraft(event.currentTarget.value)}
-                    onFocus={() => {
-                      if (isConversationUnstarted && !isActiveConversationSending) {
-                        setShowStarterQuestions(true);
-                      }
-                    }}
                     disabled={isActiveConversationSending || !activeConversation}
                   />
                   {!isActiveConversationSending ? (
