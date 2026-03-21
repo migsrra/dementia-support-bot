@@ -92,6 +92,12 @@ const seedMessages: ChatMessage[] = [
 
 let nextMessageId = 2;
 let nextConversationId = 2;
+const STARTER_QUESTIONS = [
+  "How can I calm someone with dementia who is feeling anxious?",
+  "What are some ways to build a simple daily routine for dementia care?",
+  "How should I respond when my loved one repeats the same question?",
+  "What safety changes should I make at home for someone with dementia?",
+];
 
 // Backend call function
 function formatCitationsInline(citations: unknown[]): string {
@@ -212,6 +218,7 @@ export default function Home() {
   const [activeConversationId, setActiveConversationId] = useState(1);
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
+  const [showStarterQuestions, setShowStarterQuestions] = useState(false);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
   const [controller, setController] = useState<AbortController | null>(null);
 
@@ -219,6 +226,10 @@ export default function Home() {
     conversations.find(
       (conversation) => conversation.id === activeConversationId,
     ) ?? conversations[0];
+  const isConversationUnstarted = Boolean(
+    activeConversation &&
+      activeConversation.messages.every((message) => message.role !== "user"),
+  );
 
   // run after render if something changed
   useEffect(() => {
@@ -228,6 +239,10 @@ export default function Home() {
     }
     viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
   }, [activeConversationId, activeConversation?.messages.length]);
+
+  useEffect(() => {
+    setShowStarterQuestions(false);
+  }, [activeConversationId]);
 
   // new conversation handler
   function handleNewConversation() {
@@ -247,11 +262,12 @@ export default function Home() {
     setConversations((current) => [newConversation, ...current]);
     setActiveConversationId(newConversation.id);
     setDraft("");
+    setShowStarterQuestions(false);
   }
 
   // send message handler
-  async function handleSend() {
-    const trimmed = draft.trim();
+  async function handleSend(messageOverride?: string) {
+    const trimmed = (messageOverride ?? draft).trim();
     if (!trimmed || isSending || !activeConversation) {
       return;
     }
@@ -282,6 +298,7 @@ export default function Home() {
     );
 
     setDraft("");
+    setShowStarterQuestions(false);
 
     // send message to backend, return with chatbot response
     try {
@@ -446,6 +463,32 @@ export default function Home() {
                   handleSend();
                 }}
               >
+                {showStarterQuestions && isConversationUnstarted ? (
+                  <Stack gap="xs" mb="sm" className="starter-questions">
+                    <Text size="sm" fw={600} c="dimmed">
+                      Start with a suggested question
+                    </Text>
+                    <Stack gap="sm" w="100%">
+                      {STARTER_QUESTIONS.map((question) => (
+                        <Button
+                          key={question}
+                          type="button"
+                          variant="default"
+                          color="gray"
+                          radius="md"
+                          fullWidth
+                          justify="flex-start"
+                          className="starter-question-button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleSend(question)}
+                          disabled={isSending}
+                        >
+                          {question}
+                        </Button>
+                      ))}
+                    </Stack>
+                  </Stack>
+                ) : null}
                 <Group align="flex-end" gap="sm" wrap="nowrap">
                   <TextInput
                     className="message-input"
@@ -454,6 +497,11 @@ export default function Home() {
                     size="md"
                     value={draft}
                     onChange={(event) => setDraft(event.currentTarget.value)}
+                    onFocus={() => {
+                      if (isConversationUnstarted && !isSending) {
+                        setShowStarterQuestions(true);
+                      }
+                    }}
                     disabled={isSending || !activeConversation}
                   />
                   {!isSending ? (
