@@ -2,10 +2,9 @@ import base64
 import json
 import logging
 import os
-from datetime import datetime
 
 import boto3
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 
@@ -16,22 +15,13 @@ logger.setLevel(logging.INFO)
 AWS_PROFILE = os.getenv("AWS_PROFILE")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME")
+DYNAMODB_PK_ALL_INDEX_NAME = os.getenv(
+    "DYNAMODB_PK_ALL_INDEX_NAME", "pk_all-timestamp-index"
+)
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
+PK_ALL_VALUE = "ALL"
 
-
-def _parse_timestamp(value):
-    if not isinstance(value, str) or not value.strip():
-        return datetime.min
-
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        return datetime.min
 
 def _encode_next_token(last_evaluated_key):
     if not last_evaluated_key:
@@ -53,12 +43,14 @@ def _decode_next_token(next_token):
 
     return parsed
 
-def _parse_pagination(event):
-    query_params = {}
-    if isinstance(event, dict):
-        query_params = event.get("queryStringParameters") or {}
-
+def _get_query_params(event):
+    query_params = event.get("queryStringParameters") or {} if isinstance(event, dict) else {}
     if not isinstance(query_params, dict):
+        return {}
+    return query_params
+
+def _parse_pagination(query_params):
+    if not query_params:
         return None, None, False
 
     raw_limit = query_params.get("limit")
@@ -89,6 +81,14 @@ def _parse_pagination(event):
 
     return limit, exclusive_start_key, True
 
+def _parse_sort_direction(query_params):
+    raw_sort_direction = query_params.get("sortDirection")
+    if raw_sort_direction in (None, "", "latest"):
+        return "latest", False
+    if raw_sort_direction == "oldest":
+        return "oldest", True
+    raise ValueError("Query parameter 'sortDirection' must be either 'latest' or 'oldest'.")
+
 def _build_session():
     logger.info("Building boto3 session")
     if AWS_PROFILE:
@@ -112,13 +112,54 @@ def _error_response(status_code, message):
         "body": json.dumps({"error": message}),
     }
 
+def _query_unsupported_items(
+    table,
+    filter_expression,
+    page_size,
+    exclusive_start_key,
+    scan_index_forward,
+):
+    query_kwargs = {
+        "IndexName": DYNAMODB_PK_ALL_INDEX_NAME,
+        "KeyConditionExpression": Key("pk_all").eq(PK_ALL_VALUE),
+        "FilterExpression": filter_expression,
+        "ScanIndexForward": scan_index_forward,
+    }
+    if exclusive_start_key:
+        query_kwargs["ExclusiveStartKey"] = exclusive_start_key
+    if page_size is not None:
+        query_kwargs["Limit"] = page_size
+
+    items = []
+    last_evaluated_key = None
+
+    while page_size is None or len(items) < page_size:
+        if page_size is not None:
+            query_kwargs["Limit"] = max(1, page_size - len(items))
+
+        response = table.query(**query_kwargs)
+        items.extend(response.get("Items", []))
+
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+
+        query_kwargs["ExclusiveStartKey"] = last_evaluated_key
+
+    if page_size is not None:
+        items = items[:page_size]
+
+    return items, last_evaluated_key
+
 def lambda_handler(event, context):
     try:
         if not DYNAMODB_TABLE_NAME:
             logger.error("DYNAMODB_TABLE_NAME not configured")
             return _error_response(500, "Configuration details missing. DYNAMODB_TABLE_NAME is required.")
 
-        page_size, exclusive_start_key, pagination_requested = _parse_pagination(event)
+        query_params = _get_query_params(event)
+        page_size, exclusive_start_key, pagination_requested = _parse_pagination(query_params)
+        sort_direction, scan_index_forward = _parse_sort_direction(query_params)
 
         session = _build_session()
         table = session.resource("dynamodb").Table(DYNAMODB_TABLE_NAME)
@@ -126,45 +167,15 @@ def lambda_handler(event, context):
         # Keep entries where deleted is missing or set to anything other than True.
         filter_expression = Attr("deleted").not_exists() | Attr("deleted").ne(True)
 
-        items = []
-        next_token = None
-
-        if pagination_requested:
-            scan_kwargs = {
-                "FilterExpression": filter_expression,
-                "Limit": page_size,
-            }
-            if exclusive_start_key:
-                scan_kwargs["ExclusiveStartKey"] = exclusive_start_key
-
-            last_evaluated_key = None
-            while len(items) < page_size:
-                scan_kwargs["Limit"] = max(1, page_size - len(items))
-                response = table.scan(**scan_kwargs)
-                items.extend(response.get("Items", []))
-
-                last_evaluated_key = response.get("LastEvaluatedKey")
-                if not last_evaluated_key:
-                    break
-
-                scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
-
-            items = items[:page_size]
-            next_token = _encode_next_token(last_evaluated_key)
-        else:
-            scan_kwargs = {"FilterExpression": filter_expression}
-
-            while True:
-                response = table.scan(**scan_kwargs)
-                items.extend(response.get("Items", []))
-
-                last_evaluated_key = response.get("LastEvaluatedKey")
-                if not last_evaluated_key:
-                    break
-
-                scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
-
-        items.sort(key=lambda item: _parse_timestamp(item.get("timestamp")), reverse=True)
+        requested_page_size = page_size if pagination_requested else None
+        items, last_evaluated_key = _query_unsupported_items(
+            table,
+            filter_expression,
+            requested_page_size,
+            exclusive_start_key,
+            scan_index_forward,
+        )
+        next_token = _encode_next_token(last_evaluated_key) if pagination_requested else None
 
         payload = {
             "count": len(items),
@@ -173,6 +184,7 @@ def lambda_handler(event, context):
         if pagination_requested:
             payload["nextToken"] = next_token
             payload["pageSize"] = page_size
+            payload["sortDirection"] = sort_direction
 
         return _success_response(200, payload)
 
@@ -187,4 +199,3 @@ def lambda_handler(event, context):
     except Exception as exc:
         logger.exception("Unexpected error")
         return _error_response(500, f"Internal server error: {str(exc)}")
-
