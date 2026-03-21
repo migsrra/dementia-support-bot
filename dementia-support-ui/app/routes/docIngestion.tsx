@@ -302,6 +302,8 @@ export default function DocIngestion() {
   const [unsupportedQueries, setUnsupportedQueries] = useState<
     UnsupportedQuery[]
   >([]);
+  const [unsupportedQueriesTotalCount, setUnsupportedQueriesTotalCount] =
+    useState(0);
   const [isUnsupportedQueriesLoading, setIsUnsupportedQueriesLoading] =
     useState(true);
   const [unsupportedQueriesError, setUnsupportedQueriesError] = useState<
@@ -364,6 +366,7 @@ export default function DocIngestion() {
         sortDirection: unsupportedQuerySortDirection,
       });
       setUnsupportedQueries(page.items);
+      setUnsupportedQueriesTotalCount(page.totalCount);
       setUnsupportedQueriesNextToken(page.nextToken ?? null);
       setExpandedUnsupportedQueryIds({});
     } catch (error) {
@@ -372,6 +375,7 @@ export default function DocIngestion() {
           ? error.message
           : "Failed to load unsupported queries.";
       setUnsupportedQueriesError(message);
+      setUnsupportedQueriesTotalCount(0);
       setUnsupportedQueriesNextToken(null);
     } finally {
       setIsUnsupportedQueriesLoading(false);
@@ -508,6 +512,18 @@ export default function DocIngestion() {
   }, [documentSortField, documents, filterText, sortDirection]);
 
   const unsupportedQueriesPageNumber = unsupportedQueriesPageIndex + 1;
+  const unsupportedQueriesTotalPages = Math.max(
+    1,
+    Math.ceil(unsupportedQueriesTotalCount / UNSUPPORTED_QUERIES_PAGE_LIMIT),
+  );
+  const unsupportedQueriesRangeStart =
+    unsupportedQueriesTotalCount === 0
+      ? 0
+      : unsupportedQueriesPageIndex * UNSUPPORTED_QUERIES_PAGE_LIMIT + 1;
+  const unsupportedQueriesRangeEnd =
+    unsupportedQueriesRangeStart === 0
+      ? 0
+      : unsupportedQueriesRangeStart + unsupportedQueries.length - 1;
   const hasPreviousUnsupportedQueriesPage = unsupportedQueriesPageIndex > 0;
   const hasNextUnsupportedQueriesPage = Boolean(unsupportedQueriesNextToken);
 
@@ -1865,9 +1881,11 @@ export default function DocIngestion() {
                     <Stack gap="sm">
                       <Group justify="space-between" align="center">
                         <Text size="sm" c={SECONDARY_TEXT_COLOR}>
-                          Page {unsupportedQueriesPageNumber} -{" "}
-                          {unsupportedQueries.length} quer
-                          {unsupportedQueries.length === 1 ? "y" : "ies"}
+                          Page {unsupportedQueriesPageNumber} /{" "}
+                          {unsupportedQueriesTotalPages} · Queries{" "}
+                          {unsupportedQueriesRangeStart}-
+                          {unsupportedQueriesRangeEnd} /{" "}
+                          {unsupportedQueriesTotalCount}
                         </Text>
                         <Group gap="xs">
                           <Button
