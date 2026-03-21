@@ -15,9 +15,7 @@ logger.setLevel(logging.INFO)
 AWS_PROFILE = os.getenv("AWS_PROFILE")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME")
-DYNAMODB_PK_ALL_INDEX_NAME = os.getenv(
-    "DYNAMODB_PK_ALL_INDEX_NAME", "pk_all-timestamp-index"
-)
+DYNAMODB_PK_ALL_INDEX_NAME = os.getenv("DYNAMODB_PK_ALL_INDEX_NAME")
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
 PK_ALL_VALUE = "ALL"
@@ -119,6 +117,12 @@ def _query_unsupported_items(
     exclusive_start_key,
     scan_index_forward,
 ):
+    logger.info(
+        "Fetching unsupported queries page page_size=%s has_start_key=%s scan_index_forward=%s",
+        page_size,
+        bool(exclusive_start_key),
+        scan_index_forward,
+    )
     query_kwargs = {
         "IndexName": DYNAMODB_PK_ALL_INDEX_NAME,
         "KeyConditionExpression": Key("pk_all").eq(PK_ALL_VALUE),
@@ -132,15 +136,29 @@ def _query_unsupported_items(
 
     items = []
     last_evaluated_key = None
+    query_count = 0
+    scanned_count = 0
+    matched_count = 0
 
     while page_size is None or len(items) < page_size:
         if page_size is not None:
             query_kwargs["Limit"] = max(1, page_size - len(items))
 
         response = table.query(**query_kwargs)
+        query_count += 1
         items.extend(response.get("Items", []))
+        matched_count += response.get("Count", 0)
+        scanned_count += response.get("ScannedCount", 0)
 
         last_evaluated_key = response.get("LastEvaluatedKey")
+        logger.info(
+            "Unsupported query page iteration=%s matched=%s scanned=%s accumulated=%s has_more=%s",
+            query_count,
+            response.get("Count", 0),
+            response.get("ScannedCount", 0),
+            len(items),
+            bool(last_evaluated_key),
+        )
         if not last_evaluated_key:
             break
 
@@ -149,10 +167,60 @@ def _query_unsupported_items(
     if page_size is not None:
         items = items[:page_size]
 
+    logger.info(
+        "Unsupported query fetch complete iterations=%s matched_total=%s scanned_total=%s returned=%s has_next=%s",
+        query_count,
+        matched_count,
+        scanned_count,
+        len(items),
+        bool(last_evaluated_key),
+    )
     return items, last_evaluated_key
+
+def _count_unsupported_items(table, filter_expression):
+    logger.info("Counting unsupported queries across GSI")
+    query_kwargs = {
+        "IndexName": DYNAMODB_PK_ALL_INDEX_NAME,
+        "KeyConditionExpression": Key("pk_all").eq(PK_ALL_VALUE),
+        "FilterExpression": filter_expression,
+        "Select": "COUNT",
+    }
+
+    total_count = 0
+    query_count = 0
+    scanned_count = 0
+
+    while True:
+        response = table.query(**query_kwargs)
+        query_count += 1
+        total_count += response.get("Count", 0)
+        scanned_count += response.get("ScannedCount", 0)
+
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        logger.info(
+            "Unsupported query count iteration=%s matched=%s scanned=%s accumulated_total=%s has_more=%s",
+            query_count,
+            response.get("Count", 0),
+            response.get("ScannedCount", 0),
+            total_count,
+            bool(last_evaluated_key),
+        )
+        if not last_evaluated_key:
+            break
+
+        query_kwargs["ExclusiveStartKey"] = last_evaluated_key
+
+    logger.info(
+        "Unsupported query count complete iterations=%s total_count=%s scanned_total=%s",
+        query_count,
+        total_count,
+        scanned_count,
+    )
+    return total_count
 
 def lambda_handler(event, context):
     try:
+        logger.info("Received unsupported query list request")
         if not DYNAMODB_TABLE_NAME:
             logger.error("DYNAMODB_TABLE_NAME not configured")
             return _error_response(500, "Configuration details missing. DYNAMODB_TABLE_NAME is required.")
@@ -160,6 +228,13 @@ def lambda_handler(event, context):
         query_params = _get_query_params(event)
         page_size, exclusive_start_key, pagination_requested = _parse_pagination(query_params)
         sort_direction, scan_index_forward = _parse_sort_direction(query_params)
+        logger.info(
+            "Parsed unsupported query list request pagination_requested=%s page_size=%s has_next_token=%s sort_direction=%s",
+            pagination_requested,
+            page_size,
+            bool(exclusive_start_key),
+            sort_direction,
+        )
 
         session = _build_session()
         table = session.resource("dynamodb").Table(DYNAMODB_TABLE_NAME)
@@ -175,10 +250,12 @@ def lambda_handler(event, context):
             exclusive_start_key,
             scan_index_forward,
         )
+        total_count = _count_unsupported_items(table, filter_expression)
         next_token = _encode_next_token(last_evaluated_key) if pagination_requested else None
 
         payload = {
             "count": len(items),
+            "totalCount": total_count,
             "items": items,
         }
         if pagination_requested:
@@ -186,6 +263,12 @@ def lambda_handler(event, context):
             payload["pageSize"] = page_size
             payload["sortDirection"] = sort_direction
 
+        logger.info(
+            "Returning unsupported query list response returned=%s total_count=%s has_next_token=%s",
+            len(items),
+            total_count,
+            bool(next_token),
+        )
         return _success_response(200, payload)
 
     except ValueError as exc:

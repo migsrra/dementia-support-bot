@@ -10,6 +10,7 @@ type UnsupportedQueryListResponse =
   | UnsupportedQueryApiItem[]
   | {
       count?: number;
+      totalCount?: number;
       items?: UnsupportedQueryApiItem[];
       nextToken?: string | null;
       pageSize?: number;
@@ -18,6 +19,7 @@ type UnsupportedQueryListResponse =
 
 export type UnsupportedQueriesPage = {
   count: number;
+  totalCount: number;
   items: UnsupportedQuery[];
   nextToken?: string;
   pageSize: number;
@@ -165,8 +167,16 @@ export async function listUnsupportedQueries(options?: {
       ? payload.pageSize
       : requestedLimit;
 
+  const totalCount =
+    !Array.isArray(payload) &&
+    typeof payload?.totalCount === "number" &&
+    Number.isFinite(payload.totalCount)
+      ? payload.totalCount
+      : count;
+
   return {
     count,
+    totalCount,
     items,
     nextToken,
     pageSize,
