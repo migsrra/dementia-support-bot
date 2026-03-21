@@ -95,7 +95,8 @@ let nextConversationId = 2;
 const STARTER_QUESTIONS = [
   "How can I calm someone with dementia who is feeling anxious?",
   "What are some ways to build a simple daily routine for dementia care?",
-  "How should I respond when my loved one repeats the same question?",
+  "Can you suggest ways to organize daily routines for someone with mild dementia?",
+//   "How should I respond when my loved one repeats the same question?",
   "What safety changes should I make at home for someone with dementia?",
 ];
 
@@ -127,6 +128,7 @@ function formatCitationsInline(citations: unknown[]): string {
 
   // dedupe while keeping order
   const uniq = allLinks.filter((u, idx) => allLinks.indexOf(u) === idx);
+  if (!uniq.length) return "";
   const pretty = uniq.map((u, i) => `[${i + 1}] ${u}`);
 
   return `\n\nSources:\n${pretty.join("\n")}`;
@@ -217,10 +219,12 @@ export default function Home() {
   ]);
   const [activeConversationId, setActiveConversationId] = useState(1);
   const [draft, setDraft] = useState("");
-  const [isSending, setIsSending] = useState(false);
+  const [sendingConversationIds, setSendingConversationIds] = useState<
+    number[]
+  >([]);
   const [showStarterQuestions, setShowStarterQuestions] = useState(false);
   const scrollViewportRef = useRef<HTMLDivElement | null>(null);
-  const [controller, setController] = useState<AbortController | null>(null);
+  const controllersRef = useRef<Record<number, AbortController>>({});
 
   const activeConversation =
     conversations.find(
@@ -229,6 +233,11 @@ export default function Home() {
   const isConversationUnstarted = Boolean(
     activeConversation &&
       activeConversation.messages.every((message) => message.role !== "user"),
+  );
+  const isConversationSending = (conversationId: number) =>
+    sendingConversationIds.includes(conversationId);
+  const isActiveConversationSending = Boolean(
+    activeConversation && isConversationSending(activeConversation.id),
   );
 
   // run after render if something changed
@@ -267,15 +276,25 @@ export default function Home() {
 
   // send message handler
   async function handleSend(messageOverride?: string) {
+    if (!activeConversation) {
+      return;
+    }
+
+    const conversationId = activeConversation.id;
+    const sessionID = activeConversation.sessionID;
     const trimmed = (messageOverride ?? draft).trim();
-    if (!trimmed || isSending || !activeConversation) {
+    if (!trimmed || isConversationSending(conversationId)) {
       return;
     }
 
     // set message states
     const newController = new AbortController();
-    setController(newController);
-    setIsSending(true);
+    controllersRef.current[conversationId] = newController;
+    setSendingConversationIds((current) =>
+      current.includes(conversationId)
+        ? current
+        : [...current, conversationId],
+    );
     const userMessage: ChatMessage = {
       id: nextMessageId++,
       role: "user",
@@ -284,7 +303,7 @@ export default function Home() {
 
     setConversations((current) =>
       current.map((conversation) => {
-        if (conversation.id !== activeConversation.id) return conversation;
+        if (conversation.id !== conversationId) return conversation;
 
         const isFirstUserMessage =
           conversation.messages.filter((m) => m.role === "user").length === 0;
@@ -302,11 +321,7 @@ export default function Home() {
 
     // send message to backend, return with chatbot response
     try {
-      const reply = await getAssistantReply(
-        trimmed,
-        activeConversation.sessionID,
-        newController.signal,
-      );
+      const reply = await getAssistantReply(trimmed, sessionID, newController.signal);
       const assistantMessage: ChatMessage = {
         id: nextMessageId++,
         role: "assistant",
@@ -315,7 +330,7 @@ export default function Home() {
 
       setConversations((current) =>
         current.map((conversation) =>
-          conversation.id === activeConversation.id
+          conversation.id === conversationId
             ? {
                 ...conversation,
                 messages: [...conversation.messages, assistantMessage],
@@ -334,7 +349,7 @@ export default function Home() {
 
         setConversations((current) =>
           current.map((conversation) =>
-            conversation.id === activeConversation.id
+            conversation.id === conversationId
               ? {
                   ...conversation,
                   messages: [...conversation.messages, cancelledMessage],
@@ -344,12 +359,19 @@ export default function Home() {
         );
       }
     } finally {
-      setIsSending(false);
-      setController(null);
+      delete controllersRef.current[conversationId];
+      setSendingConversationIds((current) =>
+        current.filter((id) => id !== conversationId),
+      );
     }
   }
 
   function handleCancel() {
+    if (!activeConversation) {
+      return;
+    }
+
+    const controller = controllersRef.current[activeConversation.id];
     if (controller) {
       controller.abort();
     }
@@ -433,7 +455,7 @@ export default function Home() {
                       </Text>
                     </Paper>
                   ))}
-                  {isSending && activeConversation ? (
+                  {isActiveConversationSending && activeConversation ? (
                     <Paper
                       className="message"
                       data-role="assistant"
@@ -473,15 +495,14 @@ export default function Home() {
                         <Button
                           key={question}
                           type="button"
-                          variant="default"
-                          color="gray"
-                          radius="md"
+                          variant="unstyled"
+                          radius="xl"
                           fullWidth
                           justify="flex-start"
                           className="starter-question-button"
                           onMouseDown={(event) => event.preventDefault()}
                           onClick={() => handleSend(question)}
-                          disabled={isSending}
+                          disabled={isActiveConversationSending}
                         >
                           {question}
                         </Button>
@@ -498,13 +519,13 @@ export default function Home() {
                     value={draft}
                     onChange={(event) => setDraft(event.currentTarget.value)}
                     onFocus={() => {
-                      if (isConversationUnstarted && !isSending) {
+                      if (isConversationUnstarted && !isActiveConversationSending) {
                         setShowStarterQuestions(true);
                       }
                     }}
-                    disabled={isSending || !activeConversation}
+                    disabled={isActiveConversationSending || !activeConversation}
                   />
-                  {!isSending ? (
+                  {!isActiveConversationSending ? (
                     <Button size="md" type="submit">
                       Send
                     </Button>
