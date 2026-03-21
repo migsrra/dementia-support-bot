@@ -3,6 +3,7 @@ export type UnsupportedQuery = {
   queryText: string;
   timestamp?: string;
 };
+export type UnsupportedQuerySortDirection = "latest" | "oldest";
 
 type UnsupportedQueryApiItem = Record<string, unknown>;
 type UnsupportedQueryListResponse =
@@ -104,6 +105,7 @@ function normalizeUnsupportedQuery(
 export async function listUnsupportedQueries(options?: {
   limit?: number;
   nextToken?: string;
+  sortDirection?: UnsupportedQuerySortDirection;
 }): Promise<UnsupportedQueriesPage> {
   assertConfigured(
     "VITE_UNSUPPORTED_QUERIES_API_BASE_URL",
@@ -124,6 +126,7 @@ export async function listUnsupportedQueries(options?: {
   const pagedUrl = addQueryParams(url, {
     limit: String(requestedLimit),
     nextToken: options?.nextToken,
+    sortDirection: options?.sortDirection,
   });
 
   const res = await fetchOrThrow(pagedUrl, { method: "GET" });

@@ -465,6 +465,7 @@ def lambda_handler(event, context):
                                 Item={
                                     "query_id": str(uuid.uuid4()),
                                     "timestamp": timestamp_utc,
+                                    "pk_all": "ALL",
                                     "deleted": False,
                                     "query_text": body_str,
                                 }

@@ -38,6 +38,7 @@ import {
   deleteUnsupportedQuery,
   listUnsupportedQueries,
   type UnsupportedQuery,
+  type UnsupportedQuerySortDirection,
 } from "~/api/unsupportedQueriesClient";
 
 const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024;
@@ -85,8 +86,6 @@ type PhiGroup = {
 };
 
 type DocIngestionTab = "document-ingestion" | "unsupported-queries";
-type UnsupportedQuerySortDirection = "latest" | "oldest";
-
 export function meta({}: Route.MetaArgs) {
   return [
     { title: "Document Manager" },
@@ -362,6 +361,7 @@ export default function DocIngestion() {
       const page = await listUnsupportedQueries({
         limit: UNSUPPORTED_QUERIES_PAGE_LIMIT,
         nextToken: pageToken,
+        sortDirection: unsupportedQuerySortDirection,
       });
       setUnsupportedQueries(page.items);
       setUnsupportedQueriesNextToken(page.nextToken ?? null);
@@ -376,7 +376,7 @@ export default function DocIngestion() {
     } finally {
       setIsUnsupportedQueriesLoading(false);
     }
-  }, []);
+  }, [unsupportedQuerySortDirection]);
 
   useEffect(() => {
     if (!isAuthResolved || !isAuthenticated) return;
@@ -507,16 +507,6 @@ export default function DocIngestion() {
     });
   }, [documentSortField, documents, filterText, sortDirection]);
 
-  const sortedUnsupportedQueries = useMemo(() => {
-    const items = [...unsupportedQueries];
-    items.sort((a, b) => {
-      const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-      const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-      const diff = bTime - aTime;
-      return unsupportedQuerySortDirection === "latest" ? diff : -diff;
-    });
-    return items;
-  }, [unsupportedQueries, unsupportedQuerySortDirection]);
   const unsupportedQueriesPageNumber = unsupportedQueriesPageIndex + 1;
   const hasPreviousUnsupportedQueriesPage = unsupportedQueriesPageIndex > 0;
   const hasNextUnsupportedQueriesPage = Boolean(unsupportedQueriesNextToken);
@@ -911,6 +901,16 @@ export default function DocIngestion() {
   function getDocumentSortIndicator(field: DocumentSortField) {
     if (documentSortField !== field) return "";
     return sortDirection === "asc" ? " ▲" : " ▼";
+  }
+
+  function toggleUnsupportedQuerySortDirection() {
+    setUnsupportedQueriesNextToken(null);
+    setUnsupportedQueriesPageTokens([""]);
+    setUnsupportedQueriesPageIndex(0);
+    setExpandedUnsupportedQueryIds({});
+    setUnsupportedQuerySortDirection((current) =>
+      current === "latest" ? "oldest" : "latest",
+    );
   }
 
   function handleLogin(event: React.FormEvent<HTMLFormElement>) {
@@ -1917,14 +1917,7 @@ export default function DocIngestion() {
                               </Table.Th>
                               <Table.Th style={{ width: "16%" }}>
                                 <UnstyledButton
-                                  onClick={() =>
-                                    setUnsupportedQuerySortDirection(
-                                      (current) =>
-                                        current === "latest"
-                                          ? "oldest"
-                                          : "latest",
-                                    )
-                                  }
+                                  onClick={toggleUnsupportedQuerySortDirection}
                                   style={{
                                     color: "inherit",
                                     font: "inherit",
@@ -1947,7 +1940,7 @@ export default function DocIngestion() {
                             </Table.Tr>
                           </Table.Thead>
                           <Table.Tbody>
-                            {sortedUnsupportedQueries.map((query) => {
+                            {unsupportedQueries.map((query) => {
                               const isExpanded =
                                 expandedUnsupportedQueryIds[query.id] ?? false;
                               const isLongQuery =
