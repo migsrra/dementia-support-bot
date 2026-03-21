@@ -73,6 +73,14 @@ function createSessionId() {
   return `${Date.now()}-${randomPart}`;
 }
 
+function normalizeAssistantText(text: string) {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // Initial data
 const seedMessages: ChatMessage[] = [
   {
@@ -135,8 +143,9 @@ async function getAssistantReply(
 
     const citations = data.attribution?.citations ?? [];
 
-    const baseText =
-      data.response || "Sorry, I couldn't get an answer right now.";
+    const baseText = normalizeAssistantText(
+      data.response || "Sorry, I couldn't get an answer right now.",
+    );
 
     const text = baseText + formatCitationsInline(citations);
     return { text, citations };
