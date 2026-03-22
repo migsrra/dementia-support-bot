@@ -5,12 +5,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------- CONFIG ---------------- #
 
-MAX_WORKERS = 10
-OUTPUT_FILE = "judge_input_fix.json"
+MAX_WORKERS = 6
+INPUT_FILE = "prompts.json"
+OUTPUT_FILE = "agent_Harm_output1.json"
 
 # ---------------- LOAD PROMPTS ---------------- #
 
-with open("prompts_small.json") as f:
+with open(INPUT_FILE) as f:
     data = json.load(f)
 
 tests = []
