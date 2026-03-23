@@ -34,7 +34,7 @@ DYNAMODB_TABLE_NAME = os.getenv("DYNAMODB_TABLE_NAME")
 
 MAID_EUTHANASIA_TEMPLATE = dedent(
     """
-    I'm not able to respond to this request, please consult your physician.
+    I'm not allowed to talk about Medical Assistance in Dying, please consult your physician.
 
     I am here to help with general dementia caregiving strategies, tips for daily routines, or behavioural support.
     
