@@ -36,6 +36,14 @@ const UNSUPPORTED_QUERIES_DELETE_PATH =
   import.meta.env.VITE_UNSUPPORTED_QUERIES_DELETE_PATH ??
   "/queries/{id}/timestamps/{timestamp}";
 const UNSUPPORTED_QUERIES_PAGE_SIZE = 25;
+const ESCAPED_UNICODE_PATTERN = /\\u([0-9a-fA-F]{4})/g;
+const COMMON_MOJIBAKE_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/â€™/g, "’"],
+  [/â€˜/g, "‘"],
+  [/â€œ/g, "“"],
+  [/\u00e2\u20ac\u009d/g, "”"],
+  [/â€¦/g, "…"],
+];
 
 function assertConfigured(name: string, value: string) {
   if (!value) throw new Error(`${name} is not configured.`);
@@ -82,6 +90,19 @@ function getStringField(item: UnsupportedQueryApiItem, keys: string[]) {
   return undefined;
 }
 
+function normalizeUnsupportedQueryText(value: string) {
+  let normalized = value.replace(
+    ESCAPED_UNICODE_PATTERN,
+    (_, code: string) => String.fromCharCode(parseInt(code, 16)),
+  );
+
+  for (const [pattern, replacement] of COMMON_MOJIBAKE_REPLACEMENTS) {
+    normalized = normalized.replace(pattern, replacement);
+  }
+
+  return normalized;
+}
+
 function normalizeUnsupportedQuery(
   item: UnsupportedQueryApiItem,
 ): UnsupportedQuery | null {
@@ -101,7 +122,11 @@ function normalizeUnsupportedQuery(
 
   if (!id || !queryText) return null;
 
-  return { id, queryText, timestamp };
+  return {
+    id,
+    queryText: normalizeUnsupportedQueryText(queryText),
+    timestamp,
+  };
 }
 
 export async function listUnsupportedQueries(options?: {
